@@ -1,0 +1,27 @@
+CompileFlags:
+  Add:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -I/Users/rearden/projects/toy-llm/src/include
+    - -pthread
+  Compiler: clang++
+
+Index:
+  Background: Build
+
+Diagnostics:
+  UnusedIncludes: Strict
+  ClangTidy:
+    Add:
+      - modernize-*
+      - performance-*
+      - readability-*
+    Remove:
+      - modernize-use-trailing-return-type
+      - readability-identifier-length
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
