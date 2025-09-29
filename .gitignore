@@ -18,6 +18,9 @@
 # Build directory
 bin/
 
+# Training data
+.bin
+
 # Documentation
 *.pdf
 

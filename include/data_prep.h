@@ -42,6 +42,13 @@ std::vector<TrainingBatch> create_training_batches(
   int seq_len
 );
 
+//save/load vocab
+void save_vocab(const std::unordered_map<std::string, int>& vocab, const std::string& filename);
+std::unordered_map<std::string, int> load_vocab(const std::string& filename);
+
+//save/load token_ids
+void save_token_ids(const std::vector<int>& token_ids, const std::string& filename);
+std::vector<int> load_token_ids(const std::string& filename);
 }
 
 #endif
