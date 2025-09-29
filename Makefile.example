@@ -1,0 +1,31 @@
+# Example Makefile for toy-llm project
+CXX = clang++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -pthread -O2
+SRCDIR = src/host
+SOURCES = $(wildcard $(SRCDIR)/*.cpp)
+OBJECTS = $(SOURCES:.cpp=.o)
+TARGET = toy-llm
+
+# CUDA settings (uncomment if you have CUDA installed)
+# NVCC = nvcc
+# NVCCFLAGS = -std=c++17 -Iinclude
+# CUDA_SOURCES = $(wildcard src/device/*.cu)
+# CUDA_OBJECTS = $(CUDA_SOURCES:.cu=.o)
+
+.PHONY: all clean compile_commands
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CXX) $(OBJECTS) -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Generate compile_commands.json for better LSP support
+compile_commands:
+	bear -- make clean all
+
+clean:
+	rm -f $(OBJECTS) $(TARGET)
+	rm -f src/device/*.o

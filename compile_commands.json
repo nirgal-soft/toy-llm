@@ -1,0 +1,74 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/clang++",
+      "-std=c++17",
+      "-Wall",
+      "-Wextra",
+      "-Iinclude",
+      "-pthread",
+      "-g",
+      "-c",
+      "-o",
+      "src/host/data_prep.o",
+      "src/host/data_prep.cpp"
+    ],
+    "directory": "/Users/rearden/projects/toy-llm",
+    "file": "/Users/rearden/projects/toy-llm/src/host/data_prep.cpp",
+    "output": "/Users/rearden/projects/toy-llm/src/host/data_prep.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/clang++",
+      "-std=c++17",
+      "-Wall",
+      "-Wextra",
+      "-Iinclude",
+      "-pthread",
+      "-g",
+      "-c",
+      "-o",
+      "src/host/inference.o",
+      "src/host/inference.cpp"
+    ],
+    "directory": "/Users/rearden/projects/toy-llm",
+    "file": "/Users/rearden/projects/toy-llm/src/host/inference.cpp",
+    "output": "/Users/rearden/projects/toy-llm/src/host/inference.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/clang++",
+      "-std=c++17",
+      "-Wall",
+      "-Wextra",
+      "-Iinclude",
+      "-pthread",
+      "-g",
+      "-c",
+      "-o",
+      "src/host/test_data_prep.o",
+      "src/host/test_data_prep.cpp"
+    ],
+    "directory": "/Users/rearden/projects/toy-llm",
+    "file": "/Users/rearden/projects/toy-llm/src/host/test_data_prep.cpp",
+    "output": "/Users/rearden/projects/toy-llm/src/host/test_data_prep.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/clang++",
+      "-std=c++17",
+      "-Wall",
+      "-Wextra",
+      "-Iinclude",
+      "-pthread",
+      "-g",
+      "-c",
+      "-o",
+      "src/host/training.o",
+      "src/host/training.cpp"
+    ],
+    "directory": "/Users/rearden/projects/toy-llm",
+    "file": "/Users/rearden/projects/toy-llm/src/host/training.cpp",
+    "output": "/Users/rearden/projects/toy-llm/src/host/training.o"
+  }
+]

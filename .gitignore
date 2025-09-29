@@ -1,9 +1,37 @@
+# Compiled Object files
+*.o
+*.obj
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CUDA files
 *.i
 *.ii
 *.gpu
 *.ptx
 *.cubin
 *.fatbin
-*.pdf
-.tasks
+
+# Build directory
 bin/
+
+# Documentation
+*.pdf
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# System files
+.cache/
+.DS_Store
+Thumbs.db
+
+# Task files
+.tasks

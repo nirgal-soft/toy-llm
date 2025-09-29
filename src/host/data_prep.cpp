@@ -1,4 +1,4 @@
-#include "../include/data_prep.h"
+#include "data_prep.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <regex>
 #include <set>
+#include <algorithm>
+#include <cctype>
 
 namespace data_prep{
 
@@ -88,6 +90,96 @@ std::string clean_text(const std::string& raw_text){
 
   size_t end = cleaned.find_last_not_of(" \t\n\r");
   return cleaned.substr(start, end-start+1);
+}
+
+//tokenize the text into words
+std::vector<std::string> tokenize_text(const std::string& text){
+  std::vector<std::string> tokens;
+  std::istringstream iss(text);
+  std::string word;
+
+  while (iss >> word){
+    while(!word.empty() && std::ispunct(word.back())){
+      word.pop_back();
+    }
+    while(!word.empty() && std::ispunct(word.front())){
+      word.erase(0,1);
+    }
+
+    std::transform(word.begin(), word.end(), word.begin(), ::tolower);
+
+    if(!word.empty()){
+      tokens.push_back(word);
+    }
+  }
+
+  return tokens;
+}
+
+//build vocab from all tokens
+std::unordered_map<std::string, int> build_vocabulary(const std::vector<std::string>& all_tokens){
+  std::unordered_map<std::string, int> vocab;
+  std::unordered_map<std::string, int> token_counts;
+
+  //get count freqs
+  for(const auto& token : all_tokens){
+    token_counts[token]++;
+  }
+
+  //add special tokens first
+  vocab["<PAD>"] = 0;   //padding tokens
+  vocab["<UNK>"] = 0;   //unknown tokens
+  vocab["<START>"] = 0; //start of sequence
+  vocab["<END>"] = 0;   //end of sequence
+  
+  //add tokens by frequence (most to least)
+  std::vector<std::pair<std::string, int>> sorted_tokens(token_counts.begin(), token_counts.end());
+  std::sort(sorted_tokens.begin(), sorted_tokens.end(),
+            [](const auto& a, const auto& b){return a.second>b.second;});
+
+  int token_id = 4; //starts after special tokens
+  for(const auto& [token, count] : sorted_tokens){
+    if(count >= 2){
+      vocab[token] = token_id++;
+    }
+  }
+
+  std::cout << "built vocab with " << vocab.size() << " tokens" << '\n';
+  std::cout << "most frequent tokens:" << '\n';
+  for(int i = 0; i < std::min(10, (int)sorted_tokens.size()); i++){
+    std::cout << "  " << sorted_tokens[i].first << " (" << sorted_tokens[i].second << " times)" << '\n';
+  }
+
+  return vocab;
+}
+
+std::vector<std::string> build_id_to_token_map(const std::unordered_map<std::string, int>& vocab){
+  std::vector<std::string> id_to_token(vocab.size());
+
+  for(const auto& [token, id] : vocab){
+    id_to_token[id] = token;
+  }
+
+  return id_to_token;
+}
+
+//convert tokens to ids
+std::vector<int> text_to_token_ids(
+  const std::vector<std::string>& tokens,
+  const std::unordered_map<std::string, int>& vocab
+){
+  std::vector<int> token_ids;
+
+  for(const auto& token : tokens){
+    auto it = vocab.find(token);
+    if(it != vocab.end()){
+      token_ids.push_back(it->second);
+    }else{
+      token_ids.push_back(vocab.at("<UNK>"));
+    }
+  }
+
+  return token_ids;
 }
 
 }

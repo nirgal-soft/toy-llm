@@ -21,7 +21,7 @@ std::unordered_map<std::string, int> build_vocabulary(
   const std::vector<std::string>& tokens
 );
 std::vector<std::string> build_id_to_token_map(
-  const std::unordered_map<std::string, int>& build_vocabulary
+  const std::unordered_map<std::string, int>& vocab
 );
 
 //text to token methods

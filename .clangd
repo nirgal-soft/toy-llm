@@ -3,8 +3,10 @@ CompileFlags:
     - -std=c++17
     - -Wall
     - -Wextra
-    - -I/Users/rearden/projects/toy-llm/src/include
+    - -Iinclude
+    - -Isrc
     - -pthread
+    - -DCUDA_AVAILABLE  # Define if you plan to use CUDA
   Compiler: clang++
 
 Index:
