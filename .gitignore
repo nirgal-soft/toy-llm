@@ -19,7 +19,7 @@
 bin/
 
 # Training data
-.bin
+*.bin
 
 # Documentation
 *.pdf

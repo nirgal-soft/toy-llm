@@ -75,7 +75,7 @@ std::string clean_text(const std::string& raw_text){
   cleaned = std::regex_replace(
     cleaned, std::regex(R"(^\s*\d+\s*$)"), 
     "",
-    std::regex_constants::match_flag_type::match_not_null
+    std::regex_constants::match_not_null
   );
 
   //remove excessive whitespace
