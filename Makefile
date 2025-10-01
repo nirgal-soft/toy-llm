@@ -1,5 +1,5 @@
 # Toy LLM Project Makefile
-# Supports separate C++ and CUDA compilation with debug options
+# Generic build system that automatically detects and compiles tools
 
 # Compilers
 CXX = clang++
@@ -26,23 +26,26 @@ OBJDIR = $(BINDIR)/obj
 
 # Source files
 HOST_SOURCES = $(wildcard $(HOST_SRCDIR)/*.cpp)
+HOST_CUDA_SOURCES = $(wildcard $(HOST_SRCDIR)/*.cu)
 CUDA_SOURCES = $(wildcard $(DEVICE_SRCDIR)/*.cu)
-TOOL_SOURCES = $(wildcard $(TOOLS_SRCDIR)/*.cpp)
+
+# Tool sources (automatically detect .cpp and .cu files in tools dir)
+CPP_TOOL_SOURCES = $(wildcard $(TOOLS_SRCDIR)/*.cpp)
+CUDA_TOOL_SOURCES = $(wildcard $(TOOLS_SRCDIR)/*.cu)
 
 # Object files
 HOST_OBJECTS = $(patsubst $(HOST_SRCDIR)/%.cpp,$(OBJDIR)/host_%.o,$(HOST_SOURCES))
+HOST_CUDA_OBJECTS = $(patsubst $(HOST_SRCDIR)/%.cu,$(OBJDIR)/host_%.o,$(HOST_CUDA_SOURCES))
 CUDA_OBJECTS = $(patsubst $(DEVICE_SRCDIR)/%.cu,$(OBJDIR)/cuda_%.o,$(CUDA_SOURCES))
 
-# Tool targets (separate CUDA and C++ tools)
-CPP_TOOLS = generate preprocess test_data_prep train test_pipeline
-CUDA_TOOLS = test_kernels
-CPP_TOOL_TARGETS = $(patsubst %,$(BINDIR)/%,$(CPP_TOOLS))
-CUDA_TOOL_TARGETS = $(patsubst %,$(BINDIR)/%,$(CUDA_TOOLS))
+# Tool targets (automatically generate from source files)
+CPP_TOOL_TARGETS = $(patsubst $(TOOLS_SRCDIR)/%.cpp,$(BINDIR)/%,$(CPP_TOOL_SOURCES))
+CUDA_TOOL_TARGETS = $(patsubst $(TOOLS_SRCDIR)/%.cu,$(BINDIR)/%,$(CUDA_TOOL_SOURCES))
 
 # CUDA library flags
 CUDA_LIBS = -lcudart -lcurand -lcublas
 
-.PHONY: all cpp cuda debug debug-cpp debug-cuda clean help compile_commands
+.PHONY: all cpp cuda debug debug-cpp debug-cuda clean help compile_commands list-tools
 
 # Default target
 all: cpp cuda
@@ -51,21 +54,32 @@ all: cpp cuda
 help:
 	@echo "Available targets:"
 	@echo "  all         - Build both C++ and CUDA components"
-	@echo "  cpp         - Build only C++ components"
-	@echo "  cuda        - Build only CUDA components (requires C++ components)"
+	@echo "  cpp         - Build only C++ tools (*.cpp files)"
+	@echo "  cuda        - Build only CUDA tools (*.cu files, requires C++ components)"
 	@echo "  debug       - Build all with debug flags"
 	@echo "  debug-cpp   - Build C++ components with debug flags"
 	@echo "  debug-cuda  - Build CUDA components with debug flags"
+	@echo "  list-tools  - Show detected C++ and CUDA tools"
 	@echo "  clean       - Remove all build artifacts"
 	@echo "  help        - Show this help message"
 	@echo ""
 	@echo "Debug mode: Set DEBUG=1 to enable debug build"
 	@echo "Example: make DEBUG=1 all"
 
-# C++ only build
-cpp: $(CPP_TOOL_TARGETS)
+# List detected tools
+list-tools:
+	@echo "Detected tools:"
+	@echo "C++ tools (.cpp files):"
+	@for tool in $(CPP_TOOL_SOURCES); do \
+		echo "  - $$(basename $$tool .cpp)"; \
+	done
+	@echo "CUDA tools (.cu files):"
+	@for tool in $(CUDA_TOOL_SOURCES); do \
+		echo "  - $$(basename $$tool .cu)"; \
+	done
 
-# CUDA build (depends on C++ components)
+# Build targets
+cpp: $(CPP_TOOL_TARGETS)
 cuda: cpp $(CUDA_TOOL_TARGETS)
 
 # Debug builds
@@ -84,32 +98,29 @@ CXXFLAGS = $(DEBUG_CXXFLAGS)
 NVCCFLAGS = $(DEBUG_NVCCFLAGS)
 endif
 
-# C++ tool compilation (no CUDA dependencies)
-$(BINDIR)/generate: $(TOOLS_SRCDIR)/generate.cpp $(HOST_OBJECTS) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
+# Generic rule for C++ tools
+$(BINDIR)/%: $(TOOLS_SRCDIR)/%.cpp $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) | $(BINDIR)
+	@echo "Building C++ tool: $*"
+	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) -o $@
 
-$(BINDIR)/preprocess: $(TOOLS_SRCDIR)/preprocess.cpp $(HOST_OBJECTS) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
-
-$(BINDIR)/test_data_prep: $(TOOLS_SRCDIR)/test_data_prep.cpp $(HOST_OBJECTS) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
-
-$(BINDIR)/train: $(TOOLS_SRCDIR)/train.cpp $(HOST_OBJECTS) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
-
-$(BINDIR)/test_pipeline: $(TOOLS_SRCDIR)/test_pipeline.cpp $(HOST_OBJECTS) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
-
-# CUDA tool compilation (needs both host and CUDA objects)
-$(BINDIR)/test_kernels: $(TOOLS_SRCDIR)/test_kernels.cu $(HOST_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)
-	$(NVCC) $(NVCCFLAGS) $< $(HOST_OBJECTS) $(CUDA_OBJECTS) $(CUDA_LIBS) -o $@
+# Generic rule for CUDA tools
+$(BINDIR)/%: $(TOOLS_SRCDIR)/%.cu $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)
+	@echo "Building CUDA tool: $*"
+	$(NVCC) $(NVCCFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) $(CUDA_LIBS) -o $@
 
 # Host library object compilation
 $(OBJDIR)/host_%.o: $(HOST_SRCDIR)/%.cpp | $(OBJDIR)
+	@echo "Compiling host library: $*"
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Host CUDA library object compilation
+$(OBJDIR)/host_%.o: $(HOST_SRCDIR)/%.cu | $(OBJDIR)
+	@echo "Compiling host CUDA library: $*"
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 # CUDA object compilation
 $(OBJDIR)/cuda_%.o: $(DEVICE_SRCDIR)/%.cu | $(OBJDIR)
+	@echo "Compiling CUDA kernel: $*"
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 # Directory creation
@@ -134,3 +145,5 @@ config:
 	@echo "  CXXFLAGS: $(CXXFLAGS)"
 	@echo "  NVCCFLAGS: $(NVCCFLAGS)"
 	@echo "  DEBUG: $(DEBUG)"
+	@echo ""
+	@$(MAKE) list-tools
