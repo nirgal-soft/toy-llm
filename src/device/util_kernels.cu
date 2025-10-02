@@ -103,14 +103,14 @@ __global__ void gelu_backward(float* grad_output, float* input, float* grad_inpu
 
   if(idx < size){
     float x = input[idx];
-    //derivative of gelu
     float x_cubed = x * x * x;
     float tanh_arg = 0.797885f * (x + 0.044715f * x_cubed);
     float tanh_val = tanhf(tanh_arg);
     float sech_sq = 1.0f - tanh_val * tanh_val;
 
+    // Fixed: 3 * 0.044715 = 0.134145
     float gelu_grad = 0.5f * (1.0f + tanh_val) +
-      0.5f * x * sech_sq * 0.797885f * (1.0f + 0.044715f * x * x);
+      0.5f * x * sech_sq * 0.797885f * (1.0f + 0.134145f * x * x);
 
     grad_input[idx] = grad_output[idx] * gelu_grad;
   }

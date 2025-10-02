@@ -3,6 +3,7 @@
 #include "data_prep.h"
 #include <cuda_runtime.h>
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <random>
 
@@ -27,7 +28,7 @@ void allocate_model(TrainingState* state, const ModelConfig& config){
   int batch_size = config.batch_size;
   int mlp_hidden = 4 * embed_dim;
 
-  //alocate embeddings
+  //allocate embeddings
   cuda_malloc_check((void**)&state->weights.token_embeddings,
                     vocab_size * embed_dim * sizeof(float), "token_embeddings");
   cuda_malloc_check((void**)&state->weights.position_embeddings,
@@ -54,7 +55,7 @@ void allocate_model(TrainingState* state, const ModelConfig& config){
   state->weights.mlp_fc2_weights = new float*[num_layers];
   state->weights.mlp_fc2_bias = new float*[num_layers];
 
-  //allocate per-layer attention_key_weights
+  //allocate per-layer weights
   for(int i = 0; i < num_layers; i++){
     cuda_malloc_check((void**)&state->weights.attention_query_weights[i],
                       embed_dim * embed_dim * sizeof(float), "attn_q_weights");
@@ -91,345 +92,425 @@ void allocate_model(TrainingState* state, const ModelConfig& config){
                       mlp_hidden * embed_dim * sizeof(float), "mlp_fc2_weights");
     cuda_malloc_check((void**)&state->weights.mlp_fc2_bias[i],
                       embed_dim * sizeof(float), "mlp_fc2_bias");
-
-    //final layer
-    cuda_malloc_check((void**)&state->weights.final_ln_gamma,
-                      embed_dim * sizeof(float), "final_ln_gamma");
-    cuda_malloc_check((void**)&state->weights.final_ln_beta,
-                      embed_dim * sizeof(float), "final_ln_beta");
-    cuda_malloc_check((void**)&state->weights.output_weights,
-                      embed_dim * vocab_size * sizeof(float), "output_weights");
-
-
-    // Allocate activation buffers
-    state->activations.embedded_tokens = nullptr;
-    cuda_malloc_check((void**)&state->activations.embedded_tokens,
-                      batch_size * seq_len * embed_dim * sizeof(float), "embedded_tokens");
-
-    state->activations.layer_inputs = new float*[num_layers];
-    state->activations.queries = new float*[num_layers];
-    state->activations.keys = new float*[num_layers];
-    state->activations.values = new float*[num_layers];
-    state->activations.attention_scores = new float*[num_layers];
-    state->activations.attention_weights = new float*[num_layers];
-    state->activations.attention_output = new float*[num_layers];
-    state->activations.attention_proj = new float*[num_layers];
-    state->activations.post_attn = new float*[num_layers];
-    state->activations.ln1_outputs = new float*[num_layers];
-    state->activations.mlp_fc1 = new float*[num_layers];
-    state->activations.mlp_gelu = new float*[num_layers];
-    state->activations.mlp_fc2 = new float*[num_layers];
-    state->activations.post_mlp = new float*[num_layers];
-    state->activations.ln2_outputs = new float*[num_layers];
-
-    int num_heads = config.num_heads;
-
-    for (int i = 0; i < num_layers; i++) {
-      cuda_malloc_check((void**)&state->activations.layer_inputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "layer_inputs");
-      cuda_malloc_check((void**)&state->activations.queries[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "queries");
-      cuda_malloc_check((void**)&state->activations.keys[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "keys");
-      cuda_malloc_check((void**)&state->activations.values[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "values");
-      cuda_malloc_check((void**)&state->activations.attention_scores[i],
-                        batch_size * num_heads * seq_len * seq_len * sizeof(float), "attention_scores");
-      cuda_malloc_check((void**)&state->activations.attention_weights[i],
-                        batch_size * num_heads * seq_len * seq_len * sizeof(float), "attention_weights");
-      cuda_malloc_check((void**)&state->activations.attention_output[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "attention_output");
-      cuda_malloc_check((void**)&state->activations.attention_proj[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "attention_proj");
-      cuda_malloc_check((void**)&state->activations.post_attn[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "post_attn");
-      cuda_malloc_check((void**)&state->activations.ln1_outputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "ln1_outputs");
-      cuda_malloc_check((void**)&state->activations.mlp_fc1[i],
-                        batch_size * seq_len * mlp_hidden * sizeof(float), "mlp_fc1");
-      cuda_malloc_check((void**)&state->activations.mlp_gelu[i],
-                        batch_size * seq_len * mlp_hidden * sizeof(float), "mlp_gelu");
-      cuda_malloc_check((void**)&state->activations.mlp_fc2[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "mlp_fc2");
-      cuda_malloc_check((void**)&state->activations.post_mlp[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "post_mlp");
-      cuda_malloc_check((void**)&state->activations.ln2_outputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "ln2_outputs");
-    }
-
-    cuda_malloc_check((void**)&state->activations.final_ln_output,
-                      batch_size * seq_len * embed_dim * sizeof(float), "final_ln_output");
-    cuda_malloc_check((void**)&state->activations.logits,
-                      batch_size * seq_len * vocab_size * sizeof(float), "logits");
-    cuda_malloc_check((void**)&state->activations.softmax_output,
-                      batch_size * seq_len * vocab_size * sizeof(float), "softmax_output");
-    cuda_malloc_check((void**)&state->activations.loss,
-                      sizeof(float), "loss");
-
-    // Allocate gradient buffers (same structure as activations)
-    state->gradients.token_embeddings = nullptr;
-    cuda_malloc_check((void**)&state->gradients.token_embeddings,
-                      vocab_size * embed_dim * sizeof(float), "grad_token_embeddings");
-
-    state->gradients.layer_inputs = new float*[num_layers];
-    state->gradients.queries = new float*[num_layers];
-    state->gradients.keys = new float*[num_layers];
-    state->gradients.values = new float*[num_layers];
-    state->gradients.query_input = new float*[num_layers];
-    state->gradients.key_input = new float*[num_layers];
-    state->gradients.value_input = new float*[num_layers];
-    state->gradients.attention_scores = new float*[num_layers];
-    state->gradients.attention_weights = new float*[num_layers];
-    state->gradients.attention_output = new float*[num_layers];
-    state->gradients.attention_proj = new float*[num_layers];
-    state->gradients.post_attn = new float*[num_layers];
-    state->gradients.ln1_outputs = new float*[num_layers];
-    state->gradients.mlp_fc1 = new float*[num_layers];
-    state->gradients.mlp_fc1_input = new float*[num_layers];
-    state->gradients.mlp_gelu = new float*[num_layers];
-    state->gradients.mlp_fc2 = new float*[num_layers];
-    state->gradients.post_mlp = new float*[num_layers];
-    state->gradients.ln2_outputs = new float*[num_layers];
-
-    for (int i = 0; i < num_layers; i++) {
-      cuda_malloc_check((void**)&state->gradients.layer_inputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_layer_inputs");
-      cuda_malloc_check((void**)&state->gradients.queries[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_queries");
-      cuda_malloc_check((void**)&state->gradients.keys[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_keys");
-      cuda_malloc_check((void**)&state->gradients.values[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_values");
-      cuda_malloc_check((void**)&state->gradients.query_input[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_query_input");
-      cuda_malloc_check((void**)&state->gradients.key_input[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_key_input");
-      cuda_malloc_check((void**)&state->gradients.value_input[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_value_input");
-      cuda_malloc_check((void**)&state->gradients.attention_scores[i],
-                        batch_size * num_heads * seq_len * seq_len * sizeof(float), "grad_attention_scores");
-      cuda_malloc_check((void**)&state->gradients.attention_weights[i],
-                        batch_size * num_heads * seq_len * seq_len * sizeof(float), "grad_attention_weights");
-      cuda_malloc_check((void**)&state->gradients.attention_output[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_attention_output");
-      cuda_malloc_check((void**)&state->gradients.attention_proj[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_attention_proj");
-      cuda_malloc_check((void**)&state->gradients.post_attn[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_post_attn");
-      cuda_malloc_check((void**)&state->gradients.ln1_outputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_ln1_outputs");
-      cuda_malloc_check((void**)&state->gradients.mlp_fc1[i],
-                        batch_size * seq_len * mlp_hidden * sizeof(float), "grad_mlp_fc1");
-      cuda_malloc_check((void**)&state->gradients.mlp_fc1_input[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_mlp_fc1_input");
-      cuda_malloc_check((void**)&state->gradients.mlp_gelu[i],
-                        batch_size * seq_len * mlp_hidden * sizeof(float), "grad_mlp_gelu");
-      cuda_malloc_check((void**)&state->gradients.mlp_fc2[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_mlp_fc2");
-      cuda_malloc_check((void**)&state->gradients.post_mlp[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_post_mlp");
-      cuda_malloc_check((void**)&state->gradients.ln2_outputs[i],
-                        batch_size * seq_len * embed_dim * sizeof(float), "grad_ln2_outputs");
-    }
-
-    cuda_malloc_check((void**)&state->gradients.final_ln_output,
-                      batch_size * seq_len * embed_dim * sizeof(float), "grad_final_ln_output");
-    cuda_malloc_check((void**)&state->gradients.logits,
-                      batch_size * seq_len * vocab_size * sizeof(float), "grad_logits");
-
-    // Allocate optimizer state (momentum and velocity)
-    state->optimizer.timestep = 0;
-
-    // Embeddings momentum and velocity
-    cuda_malloc_check((void**)&state->optimizer.momentum.token_embeddings,
-                      vocab_size * embed_dim * sizeof(float), "momentum_token_embeddings");
-    cuda_malloc_check((void**)&state->optimizer.velocity.token_embeddings,
-                      vocab_size * embed_dim * sizeof(float), "velocity_token_embeddings");
-    cudaMemset(state->optimizer.momentum.token_embeddings, 0, vocab_size * embed_dim * sizeof(float));
-    cudaMemset(state->optimizer.velocity.token_embeddings, 0, vocab_size * embed_dim * sizeof(float));
-
-    // Allocate per-layer momentum and velocity arrays
-    state->optimizer.momentum.attention_query_weights = new float*[num_layers];
-    state->optimizer.momentum.attention_key_weights = new float*[num_layers];
-    state->optimizer.momentum.attention_value_weights = new float*[num_layers];
-    state->optimizer.momentum.attention_output_weights = new float*[num_layers];
-    state->optimizer.momentum.attention_query_bias = new float*[num_layers];
-    state->optimizer.momentum.attention_key_bias = new float*[num_layers];
-    state->optimizer.momentum.attention_value_bias = new float*[num_layers];
-    state->optimizer.momentum.attention_output_bias = new float*[num_layers];
-    state->optimizer.momentum.ln1_gamma = new float*[num_layers];
-    state->optimizer.momentum.ln1_beta = new float*[num_layers];
-    state->optimizer.momentum.ln2_gamma = new float*[num_layers];
-    state->optimizer.momentum.ln2_beta = new float*[num_layers];
-    state->optimizer.momentum.mlp_fc1_weights = new float*[num_layers];
-    state->optimizer.momentum.mlp_fc1_bias = new float*[num_layers];
-    state->optimizer.momentum.mlp_fc2_weights = new float*[num_layers];
-    state->optimizer.momentum.mlp_fc2_bias = new float*[num_layers];
-
-    state->optimizer.velocity.attention_query_weights = new float*[num_layers];
-    state->optimizer.velocity.attention_key_weights = new float*[num_layers];
-    state->optimizer.velocity.attention_value_weights = new float*[num_layers];
-    state->optimizer.velocity.attention_output_weights = new float*[num_layers];
-    state->optimizer.velocity.attention_query_bias = new float*[num_layers];
-    state->optimizer.velocity.attention_key_bias = new float*[num_layers];
-    state->optimizer.velocity.attention_value_bias = new float*[num_layers];
-    state->optimizer.velocity.attention_output_bias = new float*[num_layers];
-    state->optimizer.velocity.ln1_gamma = new float*[num_layers];
-    state->optimizer.velocity.ln1_beta = new float*[num_layers];
-    state->optimizer.velocity.ln2_gamma = new float*[num_layers];
-    state->optimizer.velocity.ln2_beta = new float*[num_layers];
-    state->optimizer.velocity.mlp_fc1_weights = new float*[num_layers];
-    state->optimizer.velocity.mlp_fc1_bias = new float*[num_layers];
-    state->optimizer.velocity.mlp_fc2_weights = new float*[num_layers];
-    state->optimizer.velocity.mlp_fc2_bias = new float*[num_layers];
-
-    for (int i = 0; i < num_layers; i++) {
-      // Attention weights momentum and velocity
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_query_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "momentum_attn_q_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_query_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "velocity_attn_q_weights");
-      cudaMemset(state->optimizer.momentum.attention_query_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_query_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_key_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "momentum_attn_k_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_key_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "velocity_attn_k_weights");
-      cudaMemset(state->optimizer.momentum.attention_key_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_key_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_value_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "momentum_attn_v_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_value_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "velocity_attn_v_weights");
-      cudaMemset(state->optimizer.momentum.attention_value_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_value_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_output_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "momentum_attn_out_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_output_weights[i],
-                        embed_dim * embed_dim * sizeof(float), "velocity_attn_out_weights");
-      cudaMemset(state->optimizer.momentum.attention_output_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_output_weights[i], 0, embed_dim * embed_dim * sizeof(float));
-
-      // Attention biases momentum and velocity
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_query_bias[i],
-                        embed_dim * sizeof(float), "momentum_attn_q_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_query_bias[i],
-                        embed_dim * sizeof(float), "velocity_attn_q_bias");
-      cudaMemset(state->optimizer.momentum.attention_query_bias[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_query_bias[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_key_bias[i],
-                        embed_dim * sizeof(float), "momentum_attn_k_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_key_bias[i],
-                        embed_dim * sizeof(float), "velocity_attn_k_bias");
-      cudaMemset(state->optimizer.momentum.attention_key_bias[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_key_bias[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_value_bias[i],
-                        embed_dim * sizeof(float), "momentum_attn_v_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_value_bias[i],
-                        embed_dim * sizeof(float), "velocity_attn_v_bias");
-      cudaMemset(state->optimizer.momentum.attention_value_bias[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_value_bias[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.attention_output_bias[i],
-                        embed_dim * sizeof(float), "momentum_attn_out_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.attention_output_bias[i],
-                        embed_dim * sizeof(float), "velocity_attn_out_bias");
-      cudaMemset(state->optimizer.momentum.attention_output_bias[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.attention_output_bias[i], 0, embed_dim * sizeof(float));
-
-      // Layer norm momentum and velocity
-      cuda_malloc_check((void**)&state->optimizer.momentum.ln1_gamma[i],
-                        embed_dim * sizeof(float), "momentum_ln1_gamma");
-      cuda_malloc_check((void**)&state->optimizer.velocity.ln1_gamma[i],
-                        embed_dim * sizeof(float), "velocity_ln1_gamma");
-      cudaMemset(state->optimizer.momentum.ln1_gamma[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.ln1_gamma[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.ln1_beta[i],
-                        embed_dim * sizeof(float), "momentum_ln1_beta");
-      cuda_malloc_check((void**)&state->optimizer.velocity.ln1_beta[i],
-                        embed_dim * sizeof(float), "velocity_ln1_beta");
-      cudaMemset(state->optimizer.momentum.ln1_beta[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.ln1_beta[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.ln2_gamma[i],
-                        embed_dim * sizeof(float), "momentum_ln2_gamma");
-      cuda_malloc_check((void**)&state->optimizer.velocity.ln2_gamma[i],
-                        embed_dim * sizeof(float), "velocity_ln2_gamma");
-      cudaMemset(state->optimizer.momentum.ln2_gamma[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.ln2_gamma[i], 0, embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.ln2_beta[i],
-                        embed_dim * sizeof(float), "momentum_ln2_beta");
-      cuda_malloc_check((void**)&state->optimizer.velocity.ln2_beta[i],
-                        embed_dim * sizeof(float), "velocity_ln2_beta");
-      cudaMemset(state->optimizer.momentum.ln2_beta[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.ln2_beta[i], 0, embed_dim * sizeof(float));
-
-      // MLP weights momentum and velocity
-      cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc1_weights[i],
-                        embed_dim * mlp_hidden * sizeof(float), "momentum_mlp_fc1_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc1_weights[i],
-                        embed_dim * mlp_hidden * sizeof(float), "velocity_mlp_fc1_weights");
-      cudaMemset(state->optimizer.momentum.mlp_fc1_weights[i], 0, embed_dim * mlp_hidden * sizeof(float));
-      cudaMemset(state->optimizer.velocity.mlp_fc1_weights[i], 0, embed_dim * mlp_hidden * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc1_bias[i],
-                        mlp_hidden * sizeof(float), "momentum_mlp_fc1_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc1_bias[i],
-                        mlp_hidden * sizeof(float), "velocity_mlp_fc1_bias");
-      cudaMemset(state->optimizer.momentum.mlp_fc1_bias[i], 0, mlp_hidden * sizeof(float));
-      cudaMemset(state->optimizer.velocity.mlp_fc1_bias[i], 0, mlp_hidden * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc2_weights[i],
-                        mlp_hidden * embed_dim * sizeof(float), "momentum_mlp_fc2_weights");
-      cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc2_weights[i],
-                        mlp_hidden * embed_dim * sizeof(float), "velocity_mlp_fc2_weights");
-      cudaMemset(state->optimizer.momentum.mlp_fc2_weights[i], 0, mlp_hidden * embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.mlp_fc2_weights[i], 0, mlp_hidden * embed_dim * sizeof(float));
-
-      cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc2_bias[i],
-                        embed_dim * sizeof(float), "momentum_mlp_fc2_bias");
-      cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc2_bias[i],
-                        embed_dim * sizeof(float), "velocity_mlp_fc2_bias");
-      cudaMemset(state->optimizer.momentum.mlp_fc2_bias[i], 0, embed_dim * sizeof(float));
-      cudaMemset(state->optimizer.velocity.mlp_fc2_bias[i], 0, embed_dim * sizeof(float));
-    }
-
-    // Final layer momentum and velocity
-    cuda_malloc_check((void**)&state->optimizer.momentum.final_ln_gamma,
-                      embed_dim * sizeof(float), "momentum_final_ln_gamma");
-    cuda_malloc_check((void**)&state->optimizer.velocity.final_ln_gamma,
-                      embed_dim * sizeof(float), "velocity_final_ln_gamma");
-    cudaMemset(state->optimizer.momentum.final_ln_gamma, 0, embed_dim * sizeof(float));
-    cudaMemset(state->optimizer.velocity.final_ln_gamma, 0, embed_dim * sizeof(float));
-
-    cuda_malloc_check((void**)&state->optimizer.momentum.final_ln_beta,
-                      embed_dim * sizeof(float), "momentum_final_ln_beta");
-    cuda_malloc_check((void**)&state->optimizer.velocity.final_ln_beta,
-                      embed_dim * sizeof(float), "velocity_final_ln_beta");
-    cudaMemset(state->optimizer.momentum.final_ln_beta, 0, embed_dim * sizeof(float));
-    cudaMemset(state->optimizer.velocity.final_ln_beta, 0, embed_dim * sizeof(float));
-
-    cuda_malloc_check((void**)&state->optimizer.momentum.output_weights,
-                      embed_dim * vocab_size * sizeof(float), "momentum_output_weights");
-    cuda_malloc_check((void**)&state->optimizer.velocity.output_weights,
-                      embed_dim * vocab_size * sizeof(float), "velocity_output_weights");
-    cudaMemset(state->optimizer.momentum.output_weights, 0, embed_dim * vocab_size * sizeof(float));
-    cudaMemset(state->optimizer.velocity.output_weights, 0, embed_dim * vocab_size * sizeof(float));
-
-    std::cout << "model allocated successfully" << '\n';
-    std::cout << "total params: ~" <<
-      (vocab_size * embed_dim +
-       num_layers * (4 * embed_dim * embed_dim + 8 * embed_dim +
-                    embed_dim * mlp_hidden * 2 + mlp_hidden + embed_dim) +
-       embed_dim * vocab_size) / 1000000.0f << "M" << '\n';
   }
+
+  //final layer
+  cuda_malloc_check((void**)&state->weights.final_ln_gamma,
+                    embed_dim * sizeof(float), "final_ln_gamma");
+  cuda_malloc_check((void**)&state->weights.final_ln_beta,
+                    embed_dim * sizeof(float), "final_ln_beta");
+  cuda_malloc_check((void**)&state->weights.output_weights,
+                    embed_dim * vocab_size * sizeof(float), "output_weights");
+
+  // Allocate activation buffers
+  state->activations.embedded_tokens = nullptr;
+  cuda_malloc_check((void**)&state->activations.embedded_tokens,
+                    batch_size * seq_len * embed_dim * sizeof(float), "embedded_tokens");
+
+  state->activations.layer_inputs = new float*[num_layers];
+  state->activations.queries = new float*[num_layers];
+  state->activations.keys = new float*[num_layers];
+  state->activations.values = new float*[num_layers];
+  state->activations.attention_scores = new float*[num_layers];
+  state->activations.attention_weights = new float*[num_layers];
+  state->activations.attention_output = new float*[num_layers];
+  state->activations.attention_proj = new float*[num_layers];
+  state->activations.post_attn = new float*[num_layers];
+  state->activations.ln1_outputs = new float*[num_layers];
+  state->activations.mlp_fc1 = new float*[num_layers];
+  state->activations.mlp_gelu = new float*[num_layers];
+  state->activations.mlp_fc2 = new float*[num_layers];
+  state->activations.post_mlp = new float*[num_layers];
+  state->activations.ln2_outputs = new float*[num_layers];
+  state->activations.query_input = new float*[num_layers];
+  state->activations.key_input = new float*[num_layers];
+  state->activations.value_input = new float*[num_layers];
+  state->activations.mlp_fc1_input = new float*[num_layers];
+
+  int num_heads = config.num_heads;
+
+  for (int i = 0; i < num_layers; i++) {
+    cuda_malloc_check((void**)&state->activations.layer_inputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "layer_inputs");
+    cuda_malloc_check((void**)&state->activations.queries[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "queries");
+    cuda_malloc_check((void**)&state->activations.keys[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "keys");
+    cuda_malloc_check((void**)&state->activations.values[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "values");
+    cuda_malloc_check((void**)&state->activations.attention_scores[i],
+                      batch_size * num_heads * seq_len * seq_len * sizeof(float), "attention_scores");
+    cuda_malloc_check((void**)&state->activations.attention_weights[i],
+                      batch_size * num_heads * seq_len * seq_len * sizeof(float), "attention_weights");
+    cuda_malloc_check((void**)&state->activations.attention_output[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "attention_output");
+    cuda_malloc_check((void**)&state->activations.attention_proj[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "attention_proj");
+    cuda_malloc_check((void**)&state->activations.post_attn[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "post_attn");
+    cuda_malloc_check((void**)&state->activations.ln1_outputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "ln1_outputs");
+    cuda_malloc_check((void**)&state->activations.mlp_fc1[i],
+                      batch_size * seq_len * mlp_hidden * sizeof(float), "mlp_fc1");
+    cuda_malloc_check((void**)&state->activations.mlp_gelu[i],
+                      batch_size * seq_len * mlp_hidden * sizeof(float), "mlp_gelu");
+    cuda_malloc_check((void**)&state->activations.mlp_fc2[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "mlp_fc2");
+    cuda_malloc_check((void**)&state->activations.post_mlp[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "post_mlp");
+    cuda_malloc_check((void**)&state->activations.ln2_outputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "ln2_outputs");
+    cuda_malloc_check((void**)&state->activations.query_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "query_input");
+    cuda_malloc_check((void**)&state->activations.key_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "key_input");
+    cuda_malloc_check((void**)&state->activations.value_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "value_input");
+    cuda_malloc_check((void**)&state->activations.mlp_fc1_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "mlp_fc1_input");
+  }
+
+  cuda_malloc_check((void**)&state->activations.final_ln_output,
+                    batch_size * seq_len * embed_dim * sizeof(float), "final_ln_output");
+  cuda_malloc_check((void**)&state->activations.logits,
+                    batch_size * seq_len * vocab_size * sizeof(float), "logits");
+  cuda_malloc_check((void**)&state->activations.softmax_output,
+                    batch_size * seq_len * vocab_size * sizeof(float), "softmax_output");
+  cuda_malloc_check((void**)&state->activations.loss,
+                    sizeof(float), "loss");
+
+  // Allocate gradient buffers (same structure as activations)
+  state->gradients.token_embeddings = nullptr;
+  cuda_malloc_check((void**)&state->gradients.token_embeddings,
+                    vocab_size * embed_dim * sizeof(float), "grad_token_embeddings");
+
+  // Allocate gradient weight arrays
+  state->gradients.attention_query_weights = new float*[num_layers];
+  state->gradients.attention_key_weights = new float*[num_layers];
+  state->gradients.attention_value_weights = new float*[num_layers];
+  state->gradients.attention_output_weights = new float*[num_layers];
+  state->gradients.attention_query_bias = new float*[num_layers];
+  state->gradients.attention_key_bias = new float*[num_layers];
+  state->gradients.attention_value_bias = new float*[num_layers];
+  state->gradients.attention_output_bias = new float*[num_layers];
+  state->gradients.ln1_gamma = new float*[num_layers];
+  state->gradients.ln1_beta = new float*[num_layers];
+  state->gradients.ln2_gamma = new float*[num_layers];
+  state->gradients.ln2_beta = new float*[num_layers];
+  state->gradients.mlp_fc1_weights = new float*[num_layers];
+  state->gradients.mlp_fc1_bias = new float*[num_layers];
+  state->gradients.mlp_fc2_weights = new float*[num_layers];
+  state->gradients.mlp_fc2_bias = new float*[num_layers];
+
+  state->gradients.layer_inputs = new float*[num_layers];
+  state->gradients.queries = new float*[num_layers];
+  state->gradients.keys = new float*[num_layers];
+  state->gradients.values = new float*[num_layers];
+  state->gradients.query_input = new float*[num_layers];
+  state->gradients.key_input = new float*[num_layers];
+  state->gradients.value_input = new float*[num_layers];
+  state->gradients.attention_scores = new float*[num_layers];
+  state->gradients.attention_weights = new float*[num_layers];
+  state->gradients.attention_output = new float*[num_layers];
+  state->gradients.attention_proj = new float*[num_layers];
+  state->gradients.post_attn = new float*[num_layers];
+  state->gradients.ln1_outputs = new float*[num_layers];
+  state->gradients.mlp_fc1 = new float*[num_layers];
+  state->gradients.mlp_fc1_input = new float*[num_layers];
+  state->gradients.mlp_gelu = new float*[num_layers];
+  state->gradients.mlp_fc2 = new float*[num_layers];
+  state->gradients.post_mlp = new float*[num_layers];
+  state->gradients.ln2_outputs = new float*[num_layers];
+
+  for (int i = 0; i < num_layers; i++) {
+    cuda_malloc_check((void**)&state->gradients.layer_inputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_layer_inputs");
+    cuda_malloc_check((void**)&state->gradients.queries[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_queries");
+    cuda_malloc_check((void**)&state->gradients.keys[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_keys");
+    cuda_malloc_check((void**)&state->gradients.values[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_values");
+    cuda_malloc_check((void**)&state->gradients.query_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_query_input");
+    cuda_malloc_check((void**)&state->gradients.key_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_key_input");
+    cuda_malloc_check((void**)&state->gradients.value_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_value_input");
+    cuda_malloc_check((void**)&state->gradients.attention_scores[i],
+                      batch_size * num_heads * seq_len * seq_len * sizeof(float), "grad_attention_scores");
+    cuda_malloc_check((void**)&state->gradients.attention_weights[i],
+                      batch_size * num_heads * seq_len * seq_len * sizeof(float), "grad_attention_weights");
+    cuda_malloc_check((void**)&state->gradients.attention_output[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_attention_output");
+    cuda_malloc_check((void**)&state->gradients.attention_proj[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_attention_proj");
+    cuda_malloc_check((void**)&state->gradients.post_attn[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_post_attn");
+    cuda_malloc_check((void**)&state->gradients.ln1_outputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_ln1_outputs");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc1[i],
+                      batch_size * seq_len * mlp_hidden * sizeof(float), "grad_mlp_fc1");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc1_input[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_mlp_fc1_input");
+    cuda_malloc_check((void**)&state->gradients.mlp_gelu[i],
+                      batch_size * seq_len * mlp_hidden * sizeof(float), "grad_mlp_gelu");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc2[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_mlp_fc2");
+    cuda_malloc_check((void**)&state->gradients.post_mlp[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_post_mlp");
+    cuda_malloc_check((void**)&state->gradients.ln2_outputs[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "grad_ln2_outputs");
+
+    // Weight gradients
+    cuda_malloc_check((void**)&state->gradients.attention_query_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "grad_attn_q_weights");
+    cuda_malloc_check((void**)&state->gradients.attention_key_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "grad_attn_k_weights");
+    cuda_malloc_check((void**)&state->gradients.attention_value_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "grad_attn_v_weights");
+    cuda_malloc_check((void**)&state->gradients.attention_output_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "grad_attn_out_weights");
+    cuda_malloc_check((void**)&state->gradients.attention_query_bias[i],
+                      embed_dim * sizeof(float), "grad_attn_q_bias");
+    cuda_malloc_check((void**)&state->gradients.attention_key_bias[i],
+                      embed_dim * sizeof(float), "grad_attn_k_bias");
+    cuda_malloc_check((void**)&state->gradients.attention_value_bias[i],
+                      embed_dim * sizeof(float), "grad_attn_v_bias");
+    cuda_malloc_check((void**)&state->gradients.attention_output_bias[i],
+                      embed_dim * sizeof(float), "grad_attn_out_bias");
+    cuda_malloc_check((void**)&state->gradients.ln1_gamma[i],
+                      embed_dim * sizeof(float), "grad_ln1_gamma");
+    cuda_malloc_check((void**)&state->gradients.ln1_beta[i],
+                      embed_dim * sizeof(float), "grad_ln1_beta");
+    cuda_malloc_check((void**)&state->gradients.ln2_gamma[i],
+                      embed_dim * sizeof(float), "grad_ln2_gamma");
+    cuda_malloc_check((void**)&state->gradients.ln2_beta[i],
+                      embed_dim * sizeof(float), "grad_ln2_beta");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc1_weights[i],
+                      embed_dim * mlp_hidden * sizeof(float), "grad_mlp_fc1_weights");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc1_bias[i],
+                      mlp_hidden * sizeof(float), "grad_mlp_fc1_bias");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc2_weights[i],
+                      mlp_hidden * embed_dim * sizeof(float), "grad_mlp_fc2_weights");
+    cuda_malloc_check((void**)&state->gradients.mlp_fc2_bias[i],
+                      embed_dim * sizeof(float), "grad_mlp_fc2_bias");
+  }
+
+  // Final layer weight gradients (MISSING - add this!)
+  cuda_malloc_check((void**)&state->gradients.position_embeddings,
+                    seq_len * embed_dim * sizeof(float), "grad_position_embeddings");
+  cuda_malloc_check((void**)&state->gradients.final_ln_gamma,
+                    embed_dim * sizeof(float), "grad_final_ln_gamma");
+  cuda_malloc_check((void**)&state->gradients.final_ln_beta,
+                    embed_dim * sizeof(float), "grad_final_ln_beta");
+  cuda_malloc_check((void**)&state->gradients.output_weights,
+                    embed_dim * vocab_size * sizeof(float), "grad_output_weights");
+
+  cuda_malloc_check((void**)&state->gradients.final_ln_output,
+                    batch_size * seq_len * embed_dim * sizeof(float), "grad_final_ln_output");
+  cuda_malloc_check((void**)&state->gradients.logits,
+                    batch_size * seq_len * vocab_size * sizeof(float), "grad_logits");
+
+  // Allocate optimizer state (momentum and velocity)
+  state->optimizer.timestep = 0;
+
+  // Embeddings momentum and velocity
+  cuda_malloc_check((void**)&state->optimizer.momentum.token_embeddings,
+                    vocab_size * embed_dim * sizeof(float), "momentum_token_embeddings");
+  cuda_malloc_check((void**)&state->optimizer.velocity.token_embeddings,
+                    vocab_size * embed_dim * sizeof(float), "velocity_token_embeddings");
+  cudaMemset(state->optimizer.momentum.token_embeddings, 0, vocab_size * embed_dim * sizeof(float));
+  cudaMemset(state->optimizer.velocity.token_embeddings, 0, vocab_size * embed_dim * sizeof(float));
+
+  cuda_malloc_check((void**)&state->optimizer.momentum.position_embeddings,
+                   seq_len * embed_dim * sizeof(float), "momentum_position_embeddings");
+  cuda_malloc_check((void**)&state->optimizer.velocity.position_embeddings,
+                    seq_len * embed_dim * sizeof(float), "velocity_position_embeddings");
+  cudaMemset(state->optimizer.momentum.position_embeddings, 0, seq_len * embed_dim * sizeof(float));
+  cudaMemset(state->optimizer.velocity.position_embeddings, 0, seq_len * embed_dim * sizeof(float));
+
+  // Allocate per-layer momentum and velocity arrays
+  state->optimizer.momentum.attention_query_weights = new float*[num_layers];
+  state->optimizer.momentum.attention_key_weights = new float*[num_layers];
+  state->optimizer.momentum.attention_value_weights = new float*[num_layers];
+  state->optimizer.momentum.attention_output_weights = new float*[num_layers];
+  state->optimizer.momentum.attention_query_bias = new float*[num_layers];
+  state->optimizer.momentum.attention_key_bias = new float*[num_layers];
+  state->optimizer.momentum.attention_value_bias = new float*[num_layers];
+  state->optimizer.momentum.attention_output_bias = new float*[num_layers];
+  state->optimizer.momentum.ln1_gamma = new float*[num_layers];
+  state->optimizer.momentum.ln1_beta = new float*[num_layers];
+  state->optimizer.momentum.ln2_gamma = new float*[num_layers];
+  state->optimizer.momentum.ln2_beta = new float*[num_layers];
+  state->optimizer.momentum.mlp_fc1_weights = new float*[num_layers];
+  state->optimizer.momentum.mlp_fc1_bias = new float*[num_layers];
+  state->optimizer.momentum.mlp_fc2_weights = new float*[num_layers];
+  state->optimizer.momentum.mlp_fc2_bias = new float*[num_layers];
+
+  state->optimizer.velocity.attention_query_weights = new float*[num_layers];
+  state->optimizer.velocity.attention_key_weights = new float*[num_layers];
+  state->optimizer.velocity.attention_value_weights = new float*[num_layers];
+  state->optimizer.velocity.attention_output_weights = new float*[num_layers];
+  state->optimizer.velocity.attention_query_bias = new float*[num_layers];
+  state->optimizer.velocity.attention_key_bias = new float*[num_layers];
+  state->optimizer.velocity.attention_value_bias = new float*[num_layers];
+  state->optimizer.velocity.attention_output_bias = new float*[num_layers];
+  state->optimizer.velocity.ln1_gamma = new float*[num_layers];
+  state->optimizer.velocity.ln1_beta = new float*[num_layers];
+  state->optimizer.velocity.ln2_gamma = new float*[num_layers];
+  state->optimizer.velocity.ln2_beta = new float*[num_layers];
+  state->optimizer.velocity.mlp_fc1_weights = new float*[num_layers];
+  state->optimizer.velocity.mlp_fc1_bias = new float*[num_layers];
+  state->optimizer.velocity.mlp_fc2_weights = new float*[num_layers];
+  state->optimizer.velocity.mlp_fc2_bias = new float*[num_layers];
+
+  for (int i = 0; i < num_layers; i++) {
+    // Attention weights momentum and velocity
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_query_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "momentum_attn_q_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_query_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "velocity_attn_q_weights");
+    cudaMemset(state->optimizer.momentum.attention_query_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_query_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_key_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "momentum_attn_k_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_key_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "velocity_attn_k_weights");
+    cudaMemset(state->optimizer.momentum.attention_key_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_key_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_value_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "momentum_attn_v_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_value_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "velocity_attn_v_weights");
+    cudaMemset(state->optimizer.momentum.attention_value_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_value_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_output_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "momentum_attn_out_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_output_weights[i],
+                      embed_dim * embed_dim * sizeof(float), "velocity_attn_out_weights");
+    cudaMemset(state->optimizer.momentum.attention_output_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_output_weights[i], 0, embed_dim * embed_dim * sizeof(float));
+
+    // Attention biases momentum and velocity
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_query_bias[i],
+                      embed_dim * sizeof(float), "momentum_attn_q_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_query_bias[i],
+                      embed_dim * sizeof(float), "velocity_attn_q_bias");
+    cudaMemset(state->optimizer.momentum.attention_query_bias[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_query_bias[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_key_bias[i],
+                      embed_dim * sizeof(float), "momentum_attn_k_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_key_bias[i],
+                      embed_dim * sizeof(float), "velocity_attn_k_bias");
+    cudaMemset(state->optimizer.momentum.attention_key_bias[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_key_bias[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_value_bias[i],
+                      embed_dim * sizeof(float), "momentum_attn_v_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_value_bias[i],
+                      embed_dim * sizeof(float), "velocity_attn_v_bias");
+    cudaMemset(state->optimizer.momentum.attention_value_bias[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_value_bias[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.attention_output_bias[i],
+                      embed_dim * sizeof(float), "momentum_attn_out_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.attention_output_bias[i],
+                      embed_dim * sizeof(float), "velocity_attn_out_bias");
+    cudaMemset(state->optimizer.momentum.attention_output_bias[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.attention_output_bias[i], 0, embed_dim * sizeof(float));
+
+    // Layer norm momentum and velocity
+    cuda_malloc_check((void**)&state->optimizer.momentum.ln1_gamma[i],
+                      embed_dim * sizeof(float), "momentum_ln1_gamma");
+    cuda_malloc_check((void**)&state->optimizer.velocity.ln1_gamma[i],
+                      embed_dim * sizeof(float), "velocity_ln1_gamma");
+    cudaMemset(state->optimizer.momentum.ln1_gamma[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.ln1_gamma[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.ln1_beta[i],
+                      embed_dim * sizeof(float), "momentum_ln1_beta");
+    cuda_malloc_check((void**)&state->optimizer.velocity.ln1_beta[i],
+                      embed_dim * sizeof(float), "velocity_ln1_beta");
+    cudaMemset(state->optimizer.momentum.ln1_beta[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.ln1_beta[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.ln2_gamma[i],
+                      embed_dim * sizeof(float), "momentum_ln2_gamma");
+    cuda_malloc_check((void**)&state->optimizer.velocity.ln2_gamma[i],
+                      embed_dim * sizeof(float), "velocity_ln2_gamma");
+    cudaMemset(state->optimizer.momentum.ln2_gamma[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.ln2_gamma[i], 0, embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.ln2_beta[i],
+                      embed_dim * sizeof(float), "momentum_ln2_beta");
+    cuda_malloc_check((void**)&state->optimizer.velocity.ln2_beta[i],
+                      embed_dim * sizeof(float), "velocity_ln2_beta");
+    cudaMemset(state->optimizer.momentum.ln2_beta[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.ln2_beta[i], 0, embed_dim * sizeof(float));
+
+    // MLP weights momentum and velocity
+    cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc1_weights[i],
+                      embed_dim * mlp_hidden * sizeof(float), "momentum_mlp_fc1_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc1_weights[i],
+                      embed_dim * mlp_hidden * sizeof(float), "velocity_mlp_fc1_weights");
+    cudaMemset(state->optimizer.momentum.mlp_fc1_weights[i], 0, embed_dim * mlp_hidden * sizeof(float));
+    cudaMemset(state->optimizer.velocity.mlp_fc1_weights[i], 0, embed_dim * mlp_hidden * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc1_bias[i],
+                      mlp_hidden * sizeof(float), "momentum_mlp_fc1_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc1_bias[i],
+                      mlp_hidden * sizeof(float), "velocity_mlp_fc1_bias");
+    cudaMemset(state->optimizer.momentum.mlp_fc1_bias[i], 0, mlp_hidden * sizeof(float));
+    cudaMemset(state->optimizer.velocity.mlp_fc1_bias[i], 0, mlp_hidden * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc2_weights[i],
+                      mlp_hidden * embed_dim * sizeof(float), "momentum_mlp_fc2_weights");
+    cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc2_weights[i],
+                      mlp_hidden * embed_dim * sizeof(float), "velocity_mlp_fc2_weights");
+    cudaMemset(state->optimizer.momentum.mlp_fc2_weights[i], 0, mlp_hidden * embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.mlp_fc2_weights[i], 0, mlp_hidden * embed_dim * sizeof(float));
+
+    cuda_malloc_check((void**)&state->optimizer.momentum.mlp_fc2_bias[i],
+                      embed_dim * sizeof(float), "momentum_mlp_fc2_bias");
+    cuda_malloc_check((void**)&state->optimizer.velocity.mlp_fc2_bias[i],
+                      embed_dim * sizeof(float), "velocity_mlp_fc2_bias");
+    cudaMemset(state->optimizer.momentum.mlp_fc2_bias[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->optimizer.velocity.mlp_fc2_bias[i], 0, embed_dim * sizeof(float));
+  }
+
+  // Final layer momentum and velocity
+  cuda_malloc_check((void**)&state->optimizer.momentum.final_ln_gamma,
+                    embed_dim * sizeof(float), "momentum_final_ln_gamma");
+  cuda_malloc_check((void**)&state->optimizer.velocity.final_ln_gamma,
+                    embed_dim * sizeof(float), "velocity_final_ln_gamma");
+  cudaMemset(state->optimizer.momentum.final_ln_gamma, 0, embed_dim * sizeof(float));
+  cudaMemset(state->optimizer.velocity.final_ln_gamma, 0, embed_dim * sizeof(float));
+
+  cuda_malloc_check((void**)&state->optimizer.momentum.final_ln_beta,
+                    embed_dim * sizeof(float), "momentum_final_ln_beta");
+  cuda_malloc_check((void**)&state->optimizer.velocity.final_ln_beta,
+                    embed_dim * sizeof(float), "velocity_final_ln_beta");
+  cudaMemset(state->optimizer.momentum.final_ln_beta, 0, embed_dim * sizeof(float));
+  cudaMemset(state->optimizer.velocity.final_ln_beta, 0, embed_dim * sizeof(float));
+
+  cuda_malloc_check((void**)&state->optimizer.momentum.output_weights,
+                    embed_dim * vocab_size * sizeof(float), "momentum_output_weights");
+  cuda_malloc_check((void**)&state->optimizer.velocity.output_weights,
+                    embed_dim * vocab_size * sizeof(float), "velocity_output_weights");
+  cudaMemset(state->optimizer.momentum.output_weights, 0, embed_dim * vocab_size * sizeof(float));
+  cudaMemset(state->optimizer.velocity.output_weights, 0, embed_dim * vocab_size * sizeof(float));
+
+  std::cout << "model allocated successfully" << '\n';
+  std::cout << "total params: ~" <<
+    (vocab_size * embed_dim +
+     num_layers * (4 * embed_dim * embed_dim + 8 * embed_dim +
+                  embed_dim * mlp_hidden * 2 + mlp_hidden + embed_dim) +
+     embed_dim * vocab_size) / 1000000.0f << "M" << '\n';
 }
 
 void initialize_weights(TrainingState* state){
@@ -505,6 +586,15 @@ void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_
     state->weights.token_embeddings,
     state->activations.embedded_tokens,
     batch_size, seq_len, vocab_size, embed_dim
+  );
+
+  int block_size_add = 256;
+  int grid_size_add = (batch_size * seq_len * embed_dim + block_size_add - 1) / block_size_add;
+  add_position_embeddings<<<grid_size_add, block_size_add>>>(
+    state->activations.embedded_tokens,
+    state->weights.position_embeddings,
+    state->activations.layer_inputs[0],
+    batch_size, seq_len, embed_dim
   );
 
   //init first layer input with embeddings
@@ -945,10 +1035,10 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
     );
 
     matrix_multiply<<<matmul_grid, matmul_block>>>(
-      state->gradients.post_attn[layer],
-      state->weights.attention_output_weights[layer],
-      state->gradients.attention_output[layer],
-      total_tokens, embed_dim, embed_dim,
+      state->activations.attention_output[layer],  // Changed: use activations not gradients
+      state->gradients.post_attn[layer],           // Changed: use gradients not weights
+      state->gradients.attention_output_weights[layer],
+      embed_dim, embed_dim, total_tokens,          // Changed: different dimensions
       true, false
     );
 
@@ -1087,13 +1177,13 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
       total_tokens * embed_dim
     );
 
-    //accumulate gradients to layer input
-    add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
-      state->gradients.layer_inputs[layer],
-      state->gradients.queries[layer],
-      state->gradients.layer_inputs[layer],
-      total_tokens * embed_dim
-    );
+    ////accumulate gradients to layer input
+    //add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
+    //  state->gradients.layer_inputs[layer],
+    //  state->gradients.queries[layer],
+    //  state->gradients.layer_inputs[layer],
+    //  total_tokens * embed_dim
+    //);
   }
 
   // === embedding backward ===
@@ -1104,6 +1194,205 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
     batch_size, seq_len, vocab_size, embed_dim
   );
 
+  int position_grad_size = seq_len * embed_dim;
+  cudaMemset(state->gradients.position_embeddings, 0, position_grad_size * sizeof(float));
+
+  dim3 pos_grad_grid((embed_dim + 255) / 256, seq_len);
+  accumulate_position_gradients<<<pos_grad_grid, 256>>>(
+    state->gradients.layer_inputs[0],
+    state->gradients.position_embeddings,
+    batch_size, seq_len, embed_dim
+  );
+
+  cudaDeviceSynchronize();
+}
+
+void clip_gradients(TrainingState* state, float max_norm) {
+  // std::cout << "clip_gradients called with max_norm=" << max_norm << '\n';
+  int embed_dim = state->config.embed_dim;
+  int vocab_size = state->config.vocab_size;
+  int seq_len = state->config.seq_len;
+  int num_layers = state->config.num_layers;
+  int mlp_hidden = 4 * embed_dim;
+  
+  // Allocate device memory for total squared norm
+  float* d_total_squared_norm;
+  cudaMalloc(&d_total_squared_norm, sizeof(float));
+  cudaMemset(d_total_squared_norm, 0, sizeof(float));
+  
+  int block_size = 256;
+  
+  // === Compute global norm across ALL gradients ===
+  
+  // Embeddings
+  compute_squared_norm_kernel<<<(vocab_size * embed_dim + block_size - 1) / block_size, block_size>>>(
+    state->gradients.token_embeddings, vocab_size * embed_dim, d_total_squared_norm
+  );
+  compute_squared_norm_kernel<<<(seq_len * embed_dim + block_size - 1) / block_size, block_size>>>(
+    state->gradients.position_embeddings, seq_len * embed_dim, d_total_squared_norm
+  );
+  
+  // Per-layer gradients
+  for (int i = 0; i < num_layers; i++) {
+    // Attention weights (embed_dim * embed_dim each)
+    compute_squared_norm_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_query_weights[i], embed_dim * embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_key_weights[i], embed_dim * embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_value_weights[i], embed_dim * embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_output_weights[i], embed_dim * embed_dim, d_total_squared_norm
+    );
+    
+    // Attention biases (embed_dim each)
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_query_bias[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_key_bias[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_value_bias[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_output_bias[i], embed_dim, d_total_squared_norm
+    );
+    
+    // Layer norms (embed_dim each)
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln1_gamma[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln1_beta[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln2_gamma[i], embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln2_beta[i], embed_dim, d_total_squared_norm
+    );
+    
+    // MLP weights
+    compute_squared_norm_kernel<<<(embed_dim * mlp_hidden + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc1_weights[i], embed_dim * mlp_hidden, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(mlp_hidden + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc1_bias[i], mlp_hidden, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(mlp_hidden * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc2_weights[i], mlp_hidden * embed_dim, d_total_squared_norm
+    );
+    compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc2_bias[i], embed_dim, d_total_squared_norm
+    );
+  }
+  
+  // Final layer
+  compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+    state->gradients.final_ln_gamma, embed_dim, d_total_squared_norm
+  );
+  compute_squared_norm_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+    state->gradients.final_ln_beta, embed_dim, d_total_squared_norm
+  );
+  compute_squared_norm_kernel<<<(embed_dim * vocab_size + block_size - 1) / block_size, block_size>>>(
+    state->gradients.output_weights, embed_dim * vocab_size, d_total_squared_norm
+  );
+  
+  // Copy total squared norm back to host
+  float h_total_squared_norm;
+  cudaMemcpy(&h_total_squared_norm, d_total_squared_norm, sizeof(float), cudaMemcpyDeviceToHost);
+  
+  // Compute total norm and scale factor
+  float total_norm = sqrtf(h_total_squared_norm);
+
+  // std::cout << "Gradient norm: " << total_norm << " (max_norm=" << max_norm << ")";
+
+  // float debug_scale = (total_norm > max_norm) ? (max_norm / total_norm) : 1.0f;
+  // if (debug_scale < 1.0f) {
+  //   std::cout << " -> CLIPPING with scale=" << debug_scale << std::endl;
+  // } else {
+  //   std::cout << " -> no clipping needed" << std::endl;
+  // }
+
+  float scale = (total_norm > max_norm) ? (max_norm / total_norm) : 1.0f;
+  
+  // Only scale if necessary
+  if (scale < 1.0f) {
+    // Scale all gradients by the computed factor
+    scale_gradients_kernel<<<(vocab_size * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.token_embeddings, vocab_size * embed_dim, scale
+    );
+    scale_gradients_kernel<<<(seq_len * embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.position_embeddings, seq_len * embed_dim, scale
+    );
+    
+    for (int i = 0; i < num_layers; i++) {
+      scale_gradients_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_query_weights[i], embed_dim * embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_key_weights[i], embed_dim * embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_value_weights[i], embed_dim * embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim * embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_output_weights[i], embed_dim * embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_query_bias[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_key_bias[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_value_bias[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.attention_output_bias[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.ln1_gamma[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.ln1_beta[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.ln2_gamma[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.ln2_beta[i], embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim * mlp_hidden + block_size - 1) / block_size, block_size>>>(
+        state->gradients.mlp_fc1_weights[i], embed_dim * mlp_hidden, scale
+      );
+      scale_gradients_kernel<<<(mlp_hidden + block_size - 1) / block_size, block_size>>>(
+        state->gradients.mlp_fc1_bias[i], mlp_hidden, scale
+      );
+      scale_gradients_kernel<<<(mlp_hidden * embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.mlp_fc2_weights[i], mlp_hidden * embed_dim, scale
+      );
+      scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+        state->gradients.mlp_fc2_bias[i], embed_dim, scale
+      );
+    }
+    
+    scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.final_ln_gamma, embed_dim, scale
+    );
+    scale_gradients_kernel<<<(embed_dim + block_size - 1) / block_size, block_size>>>(
+      state->gradients.final_ln_beta, embed_dim, scale
+    );
+    scale_gradients_kernel<<<(embed_dim * vocab_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.output_weights, embed_dim * vocab_size, scale
+    );
+  }
+  
+  cudaFree(d_total_squared_norm);
   cudaDeviceSynchronize();
 }
 
@@ -1111,6 +1400,7 @@ void optimizer_step(TrainingState* state, float learning_rate, float beta1, floa
   int embed_dim = state->config.embed_dim;
   int vocab_size = state->config.vocab_size;
   int num_layers = state->config.num_layers;
+  int seq_len = state->config.seq_len;
   int mlp_hidden = 4 * embed_dim;
   int timestep = ++state->optimizer.timestep;
 
@@ -1123,6 +1413,15 @@ void optimizer_step(TrainingState* state, float learning_rate, float beta1, floa
     state->gradients.token_embeddings,
     state->optimizer.momentum.token_embeddings,
     state->optimizer.velocity.token_embeddings,
+    param_size, learning_rate, beta1, beta2, epsilon, timestep
+  );
+
+  param_size = seq_len * embed_dim;
+  adam_optimizer<<<(param_size + block_size - 1) / block_size, block_size>>>(
+    state->weights.position_embeddings,
+    state->gradients.position_embeddings,
+    state->optimizer.momentum.position_embeddings,
+    state->optimizer.velocity.position_embeddings,
     param_size, learning_rate, beta1, beta2, epsilon, timestep
   );
 
@@ -1289,6 +1588,7 @@ void zero_gradients(TrainingState* state){
   int embed_dim = state->config.embed_dim;
   int vocab_size = state->config.vocab_size;
   int num_layers = state->config.num_layers;
+  int num_heads = state->config.num_heads;
   int batch_size = state->config.batch_size;
   int seq_len = state->config.seq_len;
   int mlp_hidden = 4 * embed_dim;
@@ -1298,6 +1598,11 @@ void zero_gradients(TrainingState* state){
   int grad_size = vocab_size * embed_dim;
   zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
     state->gradients.token_embeddings, grad_size
+  );
+
+  grad_size = seq_len * embed_dim;
+  zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+    state->gradients.position_embeddings, grad_size
   );
 
   // Zero per-layer gradients
@@ -1364,7 +1669,80 @@ void zero_gradients(TrainingState* state){
     zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
       state->gradients.mlp_fc2_bias[i], grad_size
     );
+
+    grad_size = batch_size * seq_len * embed_dim;
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.layer_inputs[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.queries[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.keys[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.values[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.query_input[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.key_input[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.value_input[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_output[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_proj[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.post_attn[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln1_outputs[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc1_input[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.post_mlp[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.ln2_outputs[i], grad_size
+    );
+
+    grad_size = batch_size * num_heads * seq_len * seq_len;
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_scores[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.attention_weights[i], grad_size
+    );
+
+    grad_size = batch_size * seq_len * mlp_hidden;
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc1[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_gelu[i], grad_size
+    );
+    zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+      state->gradients.mlp_fc2[i], grad_size
+    );
   }
+
+  grad_size = batch_size * seq_len * embed_dim;
+  zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+    state->gradients.final_ln_output, grad_size
+  );
+
+  grad_size = batch_size * seq_len * vocab_size;
+  zero_gradients_kernel<<<(grad_size + block_size - 1) / block_size, block_size>>>(
+    state->gradients.logits, grad_size
+  );
 
   // Zero final layer gradients
   grad_size = embed_dim;
@@ -1390,6 +1768,11 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
   // Load training data
   auto token_ids = data_prep::load_token_ids(token_ids_path);
   std::cout << "Loaded " << token_ids.size() << " tokens" << std::endl;
+  std::cout << "First 20 loaded tokens: ";
+  for (int i = 0; i < 20; i++) {
+    std::cout << token_ids[i] << " ";
+  }
+  std::cout << std::endl;
 
   // Create batches
   auto batches = data_prep::create_training_batches(token_ids, config.batch_size, config.seq_len);
@@ -1404,6 +1787,16 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
   TrainingState state;
   allocate_model(&state, config);
   initialize_weights(&state);
+
+  // Verify weights aren't zero
+  std::vector<float> test_weights(100);
+  cudaMemcpy(test_weights.data(), state.weights.token_embeddings, 
+             100 * sizeof(float), cudaMemcpyDeviceToHost);
+  std::cout << "Sample weights after init: ";
+  for (int i = 0; i < 10; i++) {
+    std::cout << test_weights[i] << " ";
+  }
+  std::cout << std::endl;
 
   // Allocate device memory for batch data
   int* d_input_tokens;
@@ -1432,6 +1825,14 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         continue;
       }
 
+      if(batch_idx == 0){
+        std::cout << "batch 0 raw data - first sequence first 10 tokens: ";
+        for(int i = 0; i < 10; i++){
+          std::cout << batch.input_sequences[0][i] << " ";
+        }
+        std::cout << '\n';
+      }
+
       // Flatten batch data to contiguous arrays
       std::vector<int> h_input_flat(actual_batch_size * config.seq_len);
       std::vector<int> h_target_flat(actual_batch_size * config.seq_len);
@@ -1443,10 +1844,29 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         }
       }
 
+      if (batch_idx == 0) {
+        std::cout << "after flattening - first 10 tokens: ";
+        for (int i = 0; i < 10; i++) {
+          std::cout << h_input_flat[i] << " ";
+        }
+        std::cout << '\n';
+      }
+
       // Copy batch to device
       cudaMemcpy(d_input_tokens, h_input_flat.data(),
                  actual_batch_size * config.seq_len * sizeof(int),
                  cudaMemcpyHostToDevice);
+
+      if (batch_idx == 0) {
+        std::vector<int> verify_copy(10);
+        cudaMemcpy(verify_copy.data(), d_input_tokens, 10 * sizeof(int), cudaMemcpyDeviceToHost);
+        std::cout << "After cudaMemcpy to device - first 10 tokens: ";
+        for (int i = 0; i < 10; i++) {
+          std::cout << verify_copy[i] << " ";
+        }
+        std::cout << std::endl;
+      }
+
       cudaMemcpy(d_target_tokens, h_target_flat.data(),
                  actual_batch_size * config.seq_len * sizeof(int),
                  cudaMemcpyHostToDevice);
@@ -1454,16 +1874,63 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       // Zero gradients
       zero_gradients(&state);
 
+      cudaDeviceSynchronize();
+      if (batch_idx == 0) {
+        std::vector<int> check_before_forward(10);
+        cudaMemcpy(check_before_forward.data(), d_input_tokens, 10 * sizeof(int), cudaMemcpyDeviceToHost);
+        std::cout << "Right before forward_pass - first 10 tokens: ";
+        for (int i = 0; i < 10; i++) {
+          std::cout << check_before_forward[i] << " ";
+        }
+        std::cout << std::endl;
+      }
+
       // Forward pass
       forward_pass(&state, d_input_tokens, actual_batch_size, config.seq_len);
 
+      // Check for CUDA errors
+      cudaError_t err = cudaGetLastError();
+      if (err != cudaSuccess) {
+        std::cerr << "CUDA error after forward pass: " << cudaGetErrorString(err) << std::endl;
+        exit(1);
+      }
+      cudaDeviceSynchronize();
+      err = cudaGetLastError();
+      if (err != cudaSuccess) {
+        std::cerr << "CUDA error after synchronize: " << cudaGetErrorString(err) << std::endl;
+        exit(1);
+      }
+
       // Compute loss
       float batch_loss = compute_loss(&state, d_target_tokens, actual_batch_size, config.seq_len);
+
+      // Add diagnostics
+      if (batch_idx == 0) {
+        int vocab_size = config.vocab_size;
+        // Copy a few logits to check
+        std::vector<float> sample_logits(vocab_size);
+        cudaMemcpy(sample_logits.data(), state.activations.logits, 
+                   vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
+        
+        std::cout << "First logit values: ";
+        for (int i = 0; i < std::min(10, vocab_size); i++) {
+          std::cout << sample_logits[i] << " ";
+        }
+        std::cout << std::endl;
+        
+        std::cout << "First target token: " << h_target_flat[0] << std::endl;
+        std::cout << "Batch loss: " << batch_loss << std::endl;
+        std::cout << "Vocab size: " << vocab_size << std::endl;
+      }
+
       epoch_loss += batch_loss;
       num_batches_processed++;
 
       // Backward pass
       backward_pass(&state, d_target_tokens, actual_batch_size, config.seq_len);
+
+      //clip gradients
+      clip_gradients(&state, 1.0f);
 
       // Optimizer step
       optimizer_step(&state, learning_rate, beta1, beta2, epsilon);
@@ -1472,6 +1939,12 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       if (batch_idx % 10 == 0) {
         std::cout << "Batch " << batch_idx << "/" << batches.size() 
           << " - Loss: " << batch_loss << std::endl;
+      }
+      if(batch_idx > 0 && batch_idx % 500 == 0){
+        char checkpoint_name[256];
+        sprintf(checkpoint_name, "model_batch_%d.bin", num_batches_processed);
+        // std::string checkpoint_path = "./data/checkpoints/model.bin";
+        save_checkpoint(&state, checkpoint_name, epoch + 1, 1.0f);
       }
     }
 
@@ -1530,8 +2003,29 @@ void free_model(TrainingState* state) {
     cudaFree(state->activations.mlp_fc2[i]);
     cudaFree(state->activations.post_mlp[i]);
     cudaFree(state->activations.ln2_outputs[i]);
+    cudaFree(state->activations.query_input[i]);
+    cudaFree(state->activations.key_input[i]);
+    cudaFree(state->activations.value_input[i]);
+    cudaFree(state->activations.mlp_fc1_input[i]);
 
     // Gradient buffers (weights)
+    cudaFree(state->gradients.attention_query_weights[i]);
+    cudaFree(state->gradients.attention_key_weights[i]);
+    cudaFree(state->gradients.attention_value_weights[i]);
+    cudaFree(state->gradients.attention_output_weights[i]);
+    cudaFree(state->gradients.attention_query_bias[i]);
+    cudaFree(state->gradients.attention_key_bias[i]);
+    cudaFree(state->gradients.attention_value_bias[i]);
+    cudaFree(state->gradients.attention_output_bias[i]);
+    cudaFree(state->gradients.ln1_gamma[i]);
+    cudaFree(state->gradients.ln1_beta[i]);
+    cudaFree(state->gradients.ln2_gamma[i]);
+    cudaFree(state->gradients.ln2_beta[i]);
+    cudaFree(state->gradients.mlp_fc1_weights[i]);
+    cudaFree(state->gradients.mlp_fc1_bias[i]);
+    cudaFree(state->gradients.mlp_fc2_weights[i]);
+    cudaFree(state->gradients.mlp_fc2_bias[i]);
+
     cudaFree(state->gradients.attention_query_weights[i]);
     cudaFree(state->gradients.attention_key_weights[i]);
     cudaFree(state->gradients.attention_value_weights[i]);
@@ -1630,6 +2124,9 @@ void free_model(TrainingState* state) {
   cudaFree(state->optimizer.momentum.final_ln_beta);
   cudaFree(state->optimizer.momentum.output_weights);
 
+  cudaFree(state->optimizer.momentum.position_embeddings);
+  cudaFree(state->optimizer.velocity.position_embeddings);
+
   cudaFree(state->optimizer.velocity.token_embeddings);
   cudaFree(state->optimizer.velocity.final_ln_gamma);
   cudaFree(state->optimizer.velocity.final_ln_beta);
@@ -1668,6 +2165,10 @@ void free_model(TrainingState* state) {
   delete[] state->activations.mlp_fc2;
   delete[] state->activations.post_mlp;
   delete[] state->activations.ln2_outputs;
+  delete[] state->activations.query_input;
+  delete[] state->activations.key_input;
+  delete[] state->activations.value_input;
+  delete[] state->activations.mlp_fc1_input;
 
   delete[] state->gradients.attention_query_weights;
   delete[] state->gradients.attention_key_weights;
@@ -1740,6 +2241,164 @@ void free_model(TrainingState* state) {
   delete[] state->optimizer.velocity.mlp_fc2_bias;
 
   std::cout << "Model freed" << std::endl;
+}
+
+void save_checkpoint(const TrainingState* state, const std::string& filepath, int epoch, float loss){
+  std:: cout << "saving checkpoint to " << filepath << "..." << '\n';
+
+  std::ofstream file(filepath, std::ios::binary);
+  if(!file){
+    std::cerr << "failed to open checkpoint file for writing" << '\n';
+    return;
+  }
+
+  file.write(reinterpret_cast<const char*>(&state->config.vocab_size), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&state->config.embed_dim), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&state->config.num_layers), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&state->config.num_heads), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&state->config.seq_len), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&state->config.batch_size), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&epoch), sizeof(int));
+  file.write(reinterpret_cast<const char*>(&loss), sizeof(float));
+
+  int vocab_size = state->config.vocab_size;
+  int embed_dim = state->config.embed_dim;
+  int num_layers = state->config.num_layers;
+  int seq_len = state->config.seq_len;
+  int mlp_hidden = 4 * embed_dim;
+
+  auto save_weights = [&](float* d_weights, size_t size){
+    std::vector<float> h_weights(size);
+    cudaMemcpy(h_weights.data(), d_weights, size * sizeof(float), cudaMemcpyDeviceToHost);
+    file.write(reinterpret_cast<const char*>(h_weights.data()), size * sizeof(float));
+  };
+
+  // Save embeddings
+  save_weights(state->weights.token_embeddings, vocab_size * embed_dim);
+  save_weights(state->weights.position_embeddings, seq_len * embed_dim);
+
+  // Save per-layer weights
+  for (int i = 0; i < num_layers; i++) {
+    save_weights(state->weights.attention_query_weights[i], embed_dim * embed_dim);
+    save_weights(state->weights.attention_key_weights[i], embed_dim * embed_dim);
+    save_weights(state->weights.attention_value_weights[i], embed_dim * embed_dim);
+    save_weights(state->weights.attention_output_weights[i], embed_dim * embed_dim);
+    
+    save_weights(state->weights.attention_query_bias[i], embed_dim);
+    save_weights(state->weights.attention_key_bias[i], embed_dim);
+    save_weights(state->weights.attention_value_bias[i], embed_dim);
+    save_weights(state->weights.attention_output_bias[i], embed_dim);
+    
+    save_weights(state->weights.ln1_gamma[i], embed_dim);
+    save_weights(state->weights.ln1_beta[i], embed_dim);
+    save_weights(state->weights.ln2_gamma[i], embed_dim);
+    save_weights(state->weights.ln2_beta[i], embed_dim);
+    
+    save_weights(state->weights.mlp_fc1_weights[i], embed_dim * mlp_hidden);
+    save_weights(state->weights.mlp_fc1_bias[i], mlp_hidden);
+    save_weights(state->weights.mlp_fc2_weights[i], mlp_hidden * embed_dim);
+    save_weights(state->weights.mlp_fc2_bias[i], embed_dim);
+  }
+
+  // Save final layer
+  save_weights(state->weights.final_ln_gamma, embed_dim);
+  save_weights(state->weights.final_ln_beta, embed_dim);
+  save_weights(state->weights.output_weights, embed_dim * vocab_size);
+
+  file.close();
+  std::cout << "Checkpoint saved" << std::endl;
+}
+
+void load_checkpoint(TrainingState* state, const std::string& filepath){
+  std::cout << "loading checkpoint from " << filepath << "..." << '\n';
+
+  std::ifstream file(filepath, std::ios::binary);
+  if(!file){
+    std::cerr << "failed to open checkpoint file for reading" << '\n';
+    return;
+  }
+
+  // Read config and metadata
+  ModelConfig saved_config;
+  int saved_epoch;
+  float saved_loss;
+  
+  file.read(reinterpret_cast<char*>(&saved_config.vocab_size), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_config.embed_dim), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_config.num_layers), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_config.num_heads), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_config.seq_len), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_config.batch_size), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_epoch), sizeof(int));
+  file.read(reinterpret_cast<char*>(&saved_loss), sizeof(float));
+
+  // Verify config matches
+  if (saved_config.vocab_size != state->config.vocab_size ||
+      saved_config.embed_dim != state->config.embed_dim ||
+      saved_config.num_layers != state->config.num_layers ||
+      saved_config.num_heads != state->config.num_heads) {
+    std::cerr << "Error: Checkpoint config doesn't match current model config!" << std::endl;
+    std::cerr << "Checkpoint: vocab=" << saved_config.vocab_size 
+              << " embed=" << saved_config.embed_dim
+              << " layers=" << saved_config.num_layers 
+              << " heads=" << saved_config.num_heads << std::endl;
+    std::cerr << "Current: vocab=" << state->config.vocab_size 
+              << " embed=" << state->config.embed_dim
+              << " layers=" << state->config.num_layers 
+              << " heads=" << state->config.num_heads << std::endl;
+    file.close();
+    return;
+  }
+
+  std::cout << "Loading from epoch " << saved_epoch << " (loss: " << saved_loss << ")" << std::endl;
+
+  int vocab_size = state->config.vocab_size;
+  int embed_dim = state->config.embed_dim;
+  int num_layers = state->config.num_layers;
+  int seq_len = state->config.seq_len;
+  int mlp_hidden = 4 * embed_dim;
+
+  // Helper to read from file and copy to device
+  auto load_weights = [&](float* d_weights, size_t size) {
+    std::vector<float> h_weights(size);
+    file.read(reinterpret_cast<char*>(h_weights.data()), size * sizeof(float));
+    cudaMemcpy(d_weights, h_weights.data(), size * sizeof(float), cudaMemcpyHostToDevice);
+  };
+
+  // Load embeddings
+  load_weights(state->weights.token_embeddings, vocab_size * embed_dim);
+  load_weights(state->weights.position_embeddings, seq_len * embed_dim);
+
+  // Load per-layer weights
+  for (int i = 0; i < num_layers; i++) {
+    load_weights(state->weights.attention_query_weights[i], embed_dim * embed_dim);
+    load_weights(state->weights.attention_key_weights[i], embed_dim * embed_dim);
+    load_weights(state->weights.attention_value_weights[i], embed_dim * embed_dim);
+    load_weights(state->weights.attention_output_weights[i], embed_dim * embed_dim);
+    
+    load_weights(state->weights.attention_query_bias[i], embed_dim);
+    load_weights(state->weights.attention_key_bias[i], embed_dim);
+    load_weights(state->weights.attention_value_bias[i], embed_dim);
+    load_weights(state->weights.attention_output_bias[i], embed_dim);
+    
+    load_weights(state->weights.ln1_gamma[i], embed_dim);
+    load_weights(state->weights.ln1_beta[i], embed_dim);
+    load_weights(state->weights.ln2_gamma[i], embed_dim);
+    load_weights(state->weights.ln2_beta[i], embed_dim);
+    
+    load_weights(state->weights.mlp_fc1_weights[i], embed_dim * mlp_hidden);
+    load_weights(state->weights.mlp_fc1_bias[i], mlp_hidden);
+    load_weights(state->weights.mlp_fc2_weights[i], mlp_hidden * embed_dim);
+    load_weights(state->weights.mlp_fc2_bias[i], embed_dim);
+  }
+
+  // Load final layer
+  load_weights(state->weights.final_ln_gamma, embed_dim);
+  load_weights(state->weights.final_ln_beta, embed_dim);
+  load_weights(state->weights.output_weights, embed_dim * vocab_size);
+
+  file.close();
+  std::cout << "Checkpoint loaded successfully" << std::endl;
 }
 
 }//namespace training

@@ -24,6 +24,8 @@ __global__ void attention_scores(float* queries, float* keys, float* scores,
 __global__ void softmax(float* input, float* output, int batch_size, int seq_len);
 __global__ void attention_combine(float* att_weights, float* values, float* output,
                            int batch_size, int num_heads, int seq_len, int head_dim);
+__global__ void add_position_embeddings(float* token_embeds, float* pos_embeds, float* output,
+                                        int batch_size, int seq_len, int embed_dim);
 
 //backward pass kernels
 __global__ void cross_entropy_loss(float* logits, int* targets, float* loss,
@@ -46,6 +48,8 @@ __global__ void embedding_backward(float* grad_output, int* token_ids, float* gr
 __global__ void layer_norm_backward(float* grad_output, float* input, float* gamma,
                                     float* grad_input, float* grad_gamma, float* grad_beta,
                                     int batch_size, int seq_len, int hidden_dim, float epsilon);
+__global__ void accumulate_position_gradients(float* grad_layer_input, float* grad_pos_embeddings,
+                                               int batch_size, int seq_len, int embed_dim);
 
 //optimizer kernels
 __global__ void adam_optimizer(float* weights, float* gradients, float* momentum, float* velocity,
@@ -53,4 +57,9 @@ __global__ void adam_optimizer(float* weights, float* gradients, float* momentum
                                float epsilon, int time_step);
 __global__ void zero_gradients_kernel(float* gradients, int size);
 __global__ void sgd_optimizer(float* weights, float* gradients, int size, float learning_rate);
+
+//gradient kernels
+__global__ void compute_squared_norm_kernel(const float* data, int size, float* partial_sum);
+__global__ void scale_gradients_kernel(float* data, int size, float scale);
+
 #endif

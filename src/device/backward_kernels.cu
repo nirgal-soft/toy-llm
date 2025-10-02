@@ -203,7 +203,7 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
   float* s_grad_sum = &shared[blockDim.x];
   float* s_grad_dot = &shared[2*blockDim.x];
 
-  //recompute mean
+  // Recompute mean
   float sum = 0.0f;
   for(int i = tid; i < hidden_dim; i += blockDim.x){
     sum += input[offset+i];
@@ -212,13 +212,13 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
   __syncthreads();
 
   for(int stride = blockDim.x/2; stride > 0; stride >>= 1){
-    if(tid<stride) s_sum[tid] += s_sum[tid+stride];
+    if(tid < stride) s_sum[tid] += s_sum[tid+stride];
     __syncthreads();
   }
-  float mean = s_sum[0]/hidden_dim;
+  float mean = s_sum[0] / hidden_dim;
   __syncthreads();
 
-  //recompute vairance
+  // Recompute variance
   float sq_sum = 0.0f;
   for(int i = tid; i < hidden_dim; i += blockDim.x){
     float diff = input[offset+i] - mean;
@@ -231,12 +231,12 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
     if(tid < stride) s_sum[tid] += s_sum[tid+stride];
     __syncthreads();
   }
-  float variance = s_sum[0]/hidden_dim;
+  float variance = s_sum[0] / hidden_dim;
   float std_dev = sqrtf(variance + epsilon);
-  float inv_std = 1.0f/std_dev;
+  float inv_std = 1.0f / std_dev;
   __syncthreads();
 
-  //compute normalized vals
+  // Compute gradient components and accumulate gamma/beta gradients
   float grad_sum = 0.0f;
   float grad_dot_product = 0.0f;
 
@@ -246,9 +246,11 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
     float x_norm = x_centered * inv_std;
     float grad_out = grad_output[offset+i];
 
+    // Accumulate gradients for gamma and beta
     atomicAdd(&grad_gamma[i], grad_out * x_norm);
     atomicAdd(&grad_beta[i], grad_out);
 
+    // Accumulate for mean gradient terms
     grad_sum += grad_out * gamma[i];
     grad_dot_product += grad_out * gamma[i] * x_norm;
   }
@@ -257,7 +259,7 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
   s_grad_dot[tid] = grad_dot_product;
   __syncthreads();
 
-  //reduce graiden sums
+  // Reduce gradient sums
   for(int stride = blockDim.x/2; stride > 0; stride >>= 1){
     if(tid < stride){
       s_grad_sum[tid] += s_grad_sum[tid+stride];
@@ -270,7 +272,8 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
   float total_grad_dot = s_grad_dot[0];
   __syncthreads();
 
-  //compute full gradient
+  // Compute gradient w.r.t. input
+  // Formula: grad_input = (1/std) * [grad_out * gamma - mean(grad_out * gamma) - x_norm * mean(grad_out * gamma * x_norm)]
   float N = (float)hidden_dim;
   for(int i = tid; i < hidden_dim; i += blockDim.x){
     float x = input[offset+i];
@@ -278,10 +281,25 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
     float x_norm = x_centered * inv_std;
     float grad_out = grad_output[offset+i];
 
-    float term1 = (grad_out * gamma[i]) * inv_std;
-    float term2 = (total_grad_sum/N) * inv_std;
-    float term3 = (x_norm/N) * total_grad_dot * inv_std;
+    grad_input[offset+i] = inv_std * (
+      grad_out * gamma[i] - 
+      total_grad_sum / N - 
+      x_norm * total_grad_dot / N
+    );
+  }
+}
 
-    grad_input[offset+i] = term1 + term2 + term3;
+__global__ void accumulate_position_gradients(float* grad_layer_input, float* grad_pos_embeddings,
+                                               int batch_size, int seq_len, int embed_dim){
+  int seq_idx = blockIdx.y;
+  int dim_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  if(dim_idx < embed_dim && seq_idx < seq_len){
+    float grad = 0.0f;
+    // Sum gradients across batch dimension
+    for(int b = 0; b < batch_size; b++){
+      grad += grad_layer_input[(b * seq_len + seq_idx) * embed_dim + dim_idx];
+    }
+    atomicAdd(&grad_pos_embeddings[seq_idx * embed_dim + dim_idx], grad);
   }
 }

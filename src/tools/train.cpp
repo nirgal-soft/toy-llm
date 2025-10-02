@@ -24,14 +24,14 @@ int main(int argc, char* argv[]) {
 
   training::ModelConfig config;
   config.vocab_size = vocab_size;
-  config.embed_dim = 128;
-  config.num_layers = 2;
-  config.num_heads = 4;
+  config.embed_dim = 256;
+  config.num_layers = 4;
+  config.num_heads = 8;
   config.seq_len = 64;
   config.batch_size = 4;
 
   int num_epochs = 1;
-  float learning_rate = 0.0001f;
+  float learning_rate = 0.00001f;
 
   try{
     training::train_model(token_ids_path, config, num_epochs, learning_rate);

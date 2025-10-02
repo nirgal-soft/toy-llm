@@ -6,8 +6,11 @@ CXX = clang++
 NVCC = nvcc
 
 # Base flags
-BASE_CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -I/usr/local/cuda/include -pthread
-BASE_NVCCFLAGS = -std=c++17 -Iinclude -I/usr/local/cuda/include
+BASE_CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -I/usr/local/cuda/include -pthread --cuda-gpu-arch=sm_86 --no-cuda-version-check
+BASE_NVCCFLAGS = -std=c++17 -Iinclude -I/usr/local/cuda/include -arch=sm_86
+
+# GPU Architecture (RTX 3070 uses compute capability 8.6)
+CUDA_ARCH = sm_86
 
 # Release flags (default)
 CXXFLAGS = $(BASE_CXXFLAGS) -O2 -DNDEBUG
@@ -98,22 +101,40 @@ CXXFLAGS = $(DEBUG_CXXFLAGS)
 NVCCFLAGS = $(DEBUG_NVCCFLAGS)
 endif
 
-# Generic rule for C++ tools
-$(BINDIR)/%: $(TOOLS_SRCDIR)/%.cpp $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) | $(BINDIR)
+# Specific rules for C++ tools based on their dependencies
+
+# Tools that only need data_prep
+$(BINDIR)/preprocess: $(TOOLS_SRCDIR)/preprocess.cpp $(OBJDIR)/host_data_prep.o | $(BINDIR)
+	@echo "Building C++ tool: preprocess"
+	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
+
+$(BINDIR)/test_data_prep: $(TOOLS_SRCDIR)/test_data_prep.cpp $(OBJDIR)/host_data_prep.o | $(BINDIR)
+	@echo "Building C++ tool: test_data_prep" 
+	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
+
+
+# Tools that need training (CUDA) - use nvcc and link CUDA libs
+$(BINDIR)/train: $(TOOLS_SRCDIR)/train.cpp $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)
+	@echo "Building C++ tool with CUDA dependencies: train"
+	$(NVCC) $(NVCCFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) $(CUDA_LIBS) -o $@
+
+
+# Generic fallback for other C++ tools (basic dependencies only)
+$(BINDIR)/%: $(TOOLS_SRCDIR)/%.cpp $(HOST_OBJECTS) | $(BINDIR)
 	@echo "Building C++ tool: $*"
-	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) -o $@
+	$(CXX) $(CXXFLAGS) $< $(HOST_OBJECTS) -o $@
+
 
 # Generic rule for CUDA tools
 $(BINDIR)/%: $(TOOLS_SRCDIR)/%.cu $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)
 	@echo "Building CUDA tool: $*"
-	$(NVCC) $(NVCCFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) $(CUDA_LIBS) -o $@
-
-# Host library object compilation
-$(OBJDIR)/host_%.o: $(HOST_SRCDIR)/%.cpp | $(OBJDIR)
-	@echo "Compiling host library: $*"
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
+	$(NVCC) $(NVCCFLAGS) $< $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) -L/usr/local/cuda/lib64 $(CUDA_LIBS) -o $@
 # Host CUDA library object compilation
+
+# Host C++ library object compilation
+$(OBJDIR)/host_%.o: $(HOST_SRCDIR)/%.cpp | $(OBJDIR)
+	@echo "Compiling host C++ library: $*"
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 $(OBJDIR)/host_%.o: $(HOST_SRCDIR)/%.cu | $(OBJDIR)
 	@echo "Compiling host CUDA library: $*"
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@

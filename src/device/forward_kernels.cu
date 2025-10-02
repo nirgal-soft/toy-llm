@@ -152,3 +152,17 @@ __global__ void attention_combine(float* att_weights, float* values, float* outp
     output[out_offset+d] = sum;
   }
 }
+
+__global__ void add_position_embeddings(float* token_embeds, float* pos_embeds, float* output,
+                                        int batch_size, int seq_len, int embed_dim){
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = batch_size * seq_len * embed_dim;
+  
+  if(idx < total){
+    int b = idx / (seq_len * embed_dim);
+    int s = (idx / embed_dim) % seq_len;
+    int d = idx % embed_dim;
+    
+    output[idx] = token_embeds[idx] + pos_embeds[s * embed_dim + d];
+  }
+}
