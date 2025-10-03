@@ -112,6 +112,10 @@ $(BINDIR)/test_data_prep: $(TOOLS_SRCDIR)/test_data_prep.cpp $(OBJDIR)/host_data
 	@echo "Building C++ tool: test_data_prep" 
 	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
 
+$(BINDIR)/preprocess_txt: $(TOOLS_SRCDIR)/preprocess_txt.cpp $(OBJDIR)/host_data_prep.o | $(BINDIR)
+	@echo "Building C++ tool: preprocess_txt"
+	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
+
 
 # Tools that need training (CUDA) - use nvcc and link CUDA libs
 $(BINDIR)/train: $(TOOLS_SRCDIR)/train.cpp $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)

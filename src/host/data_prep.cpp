@@ -323,4 +323,47 @@ std::vector<int> load_token_ids(const std::string& filename){
   return token_ids;
 }
 
+//extract text from txt file
+std::string extract_txt_text(const std::string& txt_path){
+  std::cout << "Extracting text from: " << txt_path << '\n';
+  
+  std::ifstream file(txt_path);
+  if(!file.is_open()){
+    std::cerr << "Error: could not open " << txt_path << '\n';
+    return "";
+  }
+
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  file.close();
+
+  return buffer.str();
+}
+
+//extract text from all txt files in a given directory
+std::vector<std::string> extract_multiple_txts(const std::string& directory_path){
+  std::vector<std::string> all_txts;
+
+  try{
+    for (const auto& entry : std::filesystem::directory_iterator(directory_path)){
+      if(entry.path().extension() == ".txt"){
+        std::string text = extract_txt_text(entry.path().string());
+        if(!text.empty()){
+          all_txts.push_back(text);
+          std::cout << "Successfully extracted " << text.length()
+            << " characters from " << entry.path().filename() << '\n';
+        }
+      }
+    }
+  }catch(const std::filesystem::filesystem_error& ex){
+    std::cerr << "Error reading directory: " << ex.what() << '\n';
+  }
+
+  if(all_txts.empty()){
+    std::cerr << "No .txt files found in " << directory_path << '\n';
+  }
+
+  return all_txts;
+}
+
 }

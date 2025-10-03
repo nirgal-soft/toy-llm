@@ -1888,6 +1888,19 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       // Forward pass
       forward_pass(&state, d_input_tokens, actual_batch_size, config.seq_len);
 
+      float* h_logits = new float[config.vocab_size];
+      cudaMemcpy(h_logits, state.activations.logits, config.vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
+
+      bool has_nan = false;
+      for (int i = 0; i < config.vocab_size; i++) {
+        if (std::isnan(h_logits[i]) || std::isinf(h_logits[i])) {
+          has_nan = true;
+          break;
+        }
+      }
+      if (has_nan) printf("WARNING: NaN/Inf in logits at batch %zu\n", batch_idx);
+      delete[] h_logits;
+
       // Check for CUDA errors
       cudaError_t err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -1930,7 +1943,7 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       backward_pass(&state, d_target_tokens, actual_batch_size, config.seq_len);
 
       //clip gradients
-      clip_gradients(&state, 1.0f);
+      clip_gradients(&state, 0.5f);
 
       // Optimizer step
       optimizer_step(&state, learning_rate, beta1, beta2, epsilon);
@@ -1942,9 +1955,40 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       }
       if(batch_idx > 0 && batch_idx % 500 == 0){
         char checkpoint_name[256];
-        sprintf(checkpoint_name, "model_batch_%d.bin", num_batches_processed);
+        sprintf(checkpoint_name, "./data/checkpoints/model_batch_%d.bin", num_batches_processed);
         // std::string checkpoint_path = "./data/checkpoints/model.bin";
         save_checkpoint(&state, checkpoint_name, epoch + 1, 1.0f);
+      }
+
+      if (batch_idx % 100 == 0) {
+        // Check token embeddings
+        float* h_weights = new float[1000];
+        cudaMemcpy(h_weights, state.weights.token_embeddings, 1000 * sizeof(float), cudaMemcpyDeviceToHost);
+
+        float min_w = h_weights[0], max_w = h_weights[0], sum = 0;
+        for (int i = 0; i < 1000; i++) {
+          min_w = std::min(min_w, h_weights[i]);
+          max_w = std::max(max_w, h_weights[i]);
+          sum += h_weights[i];
+        }
+
+        printf("Batch %zu - Token embeddings: min=%.6f max=%.6f mean=%.6f\n", 
+               batch_idx, min_w, max_w, sum/1000);
+        delete[] h_weights;
+
+        float* h_momentum = new float[1000];
+        cudaMemcpy(h_momentum, state.optimizer.momentum.token_embeddings, 
+                   1000 * sizeof(float), cudaMemcpyDeviceToHost);
+
+        float max_m = 0, sum_m = 0;
+        for (int i = 0; i < 1000; i++) {
+          max_m = std::max(max_m, std::abs(h_momentum[i]));
+          sum_m += std::abs(h_momentum[i]);
+        }
+
+        printf("Batch %zu - Momentum: max_abs=%.6f mean_abs=%.6f\n", 
+               batch_idx, max_m, sum_m/1000);
+        delete[] h_momentum;
       }
     }
 

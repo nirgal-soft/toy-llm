@@ -24,7 +24,7 @@ void test_zero_gradients() {
 
   int block_size = 256;
   int grid_size = (size + block_size - 1) / block_size;
-  zero_gradients<<<grid_size, block_size>>>(d_gradients, size);
+  zero_gradients_kernel<<<grid_size, block_size>>>(d_gradients, size);
   check_cuda_error("zero_gradients");
 
   cudaMemcpy(h_result, d_gradients, size * sizeof(float), cudaMemcpyDeviceToHost);

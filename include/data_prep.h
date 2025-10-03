@@ -10,6 +10,10 @@ namespace data_prep{
 std::string extract_pdf_text(const std::string& pdf_path);
 std::vector<std::string> extract_multiple_pdfs(const std::string& directory_path);
 
+//txt text extraction methods
+std::string extract_txt_text(const std::string& txt_path);
+std::vector<std::string> extract_multiple_txts(const std::string& directory_path);
+
 //text cleaning methods
 std::string clean_text(const std::string& raw_text);
 

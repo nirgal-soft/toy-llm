@@ -201,7 +201,6 @@ void generate(training::TrainingState* state, const Vocabulary& vocab,
     
     // Print
     std::cout << vocab.idx_to_token[next_token] << " " << std::flush;
-    std::cout << vocab.idx_to_token[next_token] << "[id: " << next_token << "]" << " " << std::flush;
     
     // Update context
     context[current_len] = next_token;
@@ -244,8 +243,8 @@ int main(int argc, char** argv) {
   // Create config (will be overwritten by checkpoint)
   training::ModelConfig config;
   config.vocab_size = vocab.vocab_size;
-  config.embed_dim = 256;  // Will be overwritten
-  config.num_layers = 4;    // Will be overwritten
+  config.embed_dim = 128;  // Will be overwritten
+  config.num_layers = 3;    // Will be overwritten
   config.num_heads = 8;     // Will be overwritten
   config.seq_len = 64;      // Will be overwritten
   config.batch_size = 1;    // For inference
