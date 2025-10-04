@@ -20,9 +20,11 @@ bin/
 
 # Training data
 *.bin
+vocab.json
 
 # Documentation
 *.pdf
+bin/txts/tinystories.txt
 
 # IDE and editor files
 .vscode/

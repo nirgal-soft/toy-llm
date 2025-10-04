@@ -23,15 +23,15 @@ int main(int argc, char* argv[]) {
   std::cout << "vocab size: " << vocab_size << '\n';
 
   training::ModelConfig config;
-  config.vocab_size = vocab_size;
-  config.embed_dim = 128;
-  config.num_layers = 3;
-  config.num_heads = 4;
-  config.seq_len = 64;
-  config.batch_size = 16;
+  config.vocab_size = 10000;
+  config.embed_dim = 256;
+  config.num_layers = 6;
+  config.num_heads = 8;
+  config.seq_len = 256;
+  config.batch_size = 32;
 
   int num_epochs = 1;
-  float learning_rate = 0.000005f;
+  float learning_rate = 0.0003f;
 
   try{
     training::train_model(token_ids_path, config, num_epochs, learning_rate);

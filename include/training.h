@@ -170,7 +170,7 @@ void initialize_weights(TrainingState* state);
 
 void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_len);
 float compute_loss(TrainingState* state, int* target_ids, int batch_size, int seq_len);
-void backward_pass(TrainingState* state, int* target_ids, int batch_size, int seq_len);
+void backward_pass(TrainingState* state, int* input_ids, int* target_ids, int batch_size, int seq_len);
 void clip_gradients(TrainingState* state, float max_norm);
 void optimizer_step(TrainingState* state, float learning_rate, float beta1, float beta2, float epsilon);
 void zero_gradients(TrainingState* state);
@@ -178,6 +178,7 @@ void zero_gradients(TrainingState* state);
 void train_model(const std::string& token_ids_path, const ModelConfig& config, int num_epochs, float learning_rate);
 void save_checkpoint(const TrainingState*, const std::string& filepath, int num_epochs, float lost);
 void load_checkpoint(TrainingState* state, const std::string& filepath);
+float get_learning_rate(int step, int warmup_steps, int total_steps, float max_lr);
 
 }
 

@@ -116,6 +116,10 @@ $(BINDIR)/preprocess_txt: $(TOOLS_SRCDIR)/preprocess_txt.cpp $(OBJDIR)/host_data
 	@echo "Building C++ tool: preprocess_txt"
 	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
 
+$(BINDIR)/preprocess_txt_streaming: $(TOOLS_SRCDIR)/preprocess_txt_streaming.cpp $(OBJDIR)/host_data_prep.o | $(BINDIR)
+	@echo "Building C++ tool: preprocess_txt_streaming"
+	$(CXX) $(CXXFLAGS) $< $(OBJDIR)/host_data_prep.o -o $@
+
 
 # Tools that need training (CUDA) - use nvcc and link CUDA libs
 $(BINDIR)/train: $(TOOLS_SRCDIR)/train.cpp $(HOST_OBJECTS) $(HOST_CUDA_OBJECTS) $(CUDA_OBJECTS) | $(BINDIR)
@@ -172,3 +176,7 @@ config:
 	@echo "  DEBUG: $(DEBUG)"
 	@echo ""
 	@$(MAKE) list-tools
+
+# Convenience alias for streaming preprocessor
+.PHONY: preprocess_txt_streaming
+preprocess_txt_streaming: $(BINDIR)/preprocess_txt_streaming

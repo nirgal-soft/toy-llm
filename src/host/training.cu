@@ -598,10 +598,10 @@ void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_
   );
 
   //init first layer input with embeddings
-  cudaMemcpy(state->activations.layer_inputs[0],
-             state->activations.embedded_tokens,
-             batch_size * seq_len * embed_dim * sizeof(float),
-             cudaMemcpyDeviceToDevice);
+  // cudaMemcpy(state->activations.layer_inputs[0],
+  //            state->activations.embedded_tokens,
+  //            batch_size * seq_len * embed_dim * sizeof(float),
+  //            cudaMemcpyDeviceToDevice);
 
   //process through transformer layers
   for(int layer = 0; layer < state->config.num_layers; layer++){
@@ -846,13 +846,26 @@ float compute_loss(TrainingState* state, int* target_ids, int batch_size, int se
   return h_loss;
 }
 
-void backward_pass(TrainingState* state, int* target_ids, int batch_size, int seq_len){
+void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
+                   int batch_size, int seq_len){
   int embed_dim = state->config.embed_dim;
   int vocab_size = state->config.vocab_size;
   int num_heads = state->config.num_heads;
   int head_dim = embed_dim/num_heads;
   int total_tokens = batch_size * seq_len;
   int mlp_hidden = 4 * embed_dim;
+
+  int num_layers = state->config.num_layers;
+  
+  // Zero layer norm parameter gradients (they use atomicAdd)
+  for (int i = 0; i < num_layers; i++) {
+    cudaMemset(state->gradients.ln1_gamma[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->gradients.ln1_beta[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->gradients.ln2_gamma[i], 0, embed_dim * sizeof(float));
+    cudaMemset(state->gradients.ln2_beta[i], 0, embed_dim * sizeof(float));
+  }
+  cudaMemset(state->gradients.final_ln_gamma, 0, embed_dim * sizeof(float));
+  cudaMemset(state->gradients.final_ln_beta, 0, embed_dim * sizeof(float));
 
   // === gradient of loss w.r.t. logits ===
   // softmax + cross-entorpy backward combined
@@ -928,13 +941,13 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
     );
 
     // === mlp backward ===
-    
-    //residual: splits gradient between residual path and mlp
-    cudaMemcpy(
+   
+    //residual: add gradient from post_mlp path to ln1_outputs
+    add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
       state->gradients.ln1_outputs[layer],
       state->gradients.post_mlp[layer],
-      total_tokens * embed_dim * sizeof(float),
-      cudaMemcpyDeviceToDevice
+      state->gradients.ln1_outputs[layer],
+      total_tokens * embed_dim
     );
 
     // fc2 backward
@@ -1017,35 +1030,44 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
 
     // === attention backward ===
 
-    //residual: split gradient
-    cudaMemcpy(
+    //residual: add gradient from post_attn path to layer_inputs
+    add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
       state->gradients.layer_inputs[layer],
       state->gradients.post_attn[layer],
-      total_tokens * embed_dim * sizeof(float),
-      cudaMemcpyDeviceToDevice
+      state->gradients.layer_inputs[layer],
+      total_tokens * embed_dim
     );
 
     //output projection backward
+    // First copy gradient from post_attn to attention_proj
+    cudaMemcpy(state->gradients.attention_proj[layer],
+               state->gradients.post_attn[layer],
+               total_tokens * embed_dim * sizeof(float),
+               cudaMemcpyDeviceToDevice);
+
+    // Backward through bias
+    linear_bias_backward<<<(embed_dim + 255)/256, 256>>>(
+      state->gradients.attention_proj[layer],  // FIXED
+      state->gradients.attention_output_bias[layer],
+      batch_size, seq_len, embed_dim
+    );
+
+    // Backward through weight (activations -> gradients)
     matrix_multiply<<<matmul_grid, matmul_block>>>(
-      state->gradients.post_attn[layer],
+      state->gradients.attention_proj[layer],  // FIXED
       state->weights.attention_output_weights[layer],
       state->gradients.attention_output[layer],
       total_tokens, embed_dim, embed_dim,
       false, true
     );
 
+    // Weight gradient
     matrix_multiply<<<matmul_grid, matmul_block>>>(
-      state->activations.attention_output[layer],  // Changed: use activations not gradients
-      state->gradients.post_attn[layer],           // Changed: use gradients not weights
+      state->activations.attention_output[layer],
+      state->gradients.attention_proj[layer],  // FIXED
       state->gradients.attention_output_weights[layer],
-      embed_dim, embed_dim, total_tokens,          // Changed: different dimensions
+      embed_dim, embed_dim, total_tokens,
       true, false
-    );
-
-    linear_bias_backward<<<(embed_dim + 255)/256, 256>>>(
-      state->gradients.post_attn[layer],
-      state->gradients.attention_output_bias[layer],
-      batch_size, seq_len, embed_dim
     );
 
     //attention mechanism backward
@@ -1184,12 +1206,32 @@ void backward_pass(TrainingState* state, int* target_ids, int batch_size, int se
     //  state->gradients.layer_inputs[layer],
     //  total_tokens * embed_dim
     //);
+    // if (layer == 0) {  // Only check first layer
+    //   auto norm = [](float* d_ptr, int size) {
+    //     std::vector<float> h_data(size);
+    //     cudaMemcpy(h_data.data(), d_ptr, size * sizeof(float), cudaMemcpyDeviceToHost);
+    //     float sum = 0;
+    //     for (float x : h_data) sum += x*x;
+    //     return sqrt(sum / size);
+    //   };
+
+    //   int sample_size = 100;
+    //   std::cout << "  === Attention backward trace (layer 0) ===" << std::endl;
+    //   std::cout << "    grad_post_attn: " << norm(state->gradients.post_attn[0], sample_size) << std::endl;
+    //   std::cout << "    grad_attention_proj: " << norm(state->gradients.attention_proj[0], sample_size) << std::endl;
+    //   std::cout << "    grad_attention_output: " << norm(state->gradients.attention_output[0], sample_size) << std::endl;
+    //   std::cout << "    grad_attention_weights: " << norm(state->gradients.attention_weights[0], sample_size) << std::endl;
+    //   std::cout << "    grad_attention_scores: " << norm(state->gradients.attention_scores[0], sample_size) << std::endl;
+    //   std::cout << "    grad_queries: " << norm(state->gradients.queries[0], sample_size) << std::endl;
+    //   std::cout << "    grad_keys: " << norm(state->gradients.keys[0], sample_size) << std::endl;
+    //   std::cout << "    grad_values: " << norm(state->gradients.values[0], sample_size) << std::endl;
+    // }
   }
 
   // === embedding backward ===
   embedding_backward<<<grid_size, block_size>>>(
     state->gradients.layer_inputs[0],
-    target_ids,
+    input_ids,
     state->gradients.token_embeddings,
     batch_size, seq_len, vocab_size, embed_dim
   );
@@ -1807,7 +1849,7 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
   // Adam hyperparameters
   float beta1 = 0.9f;
   float beta2 = 0.999f;
-  float epsilon = 1e-8f;
+  float epsilon = 1e-7f;
 
   // Training loop
   for (int epoch = 0; epoch < num_epochs; epoch++) {
@@ -1885,21 +1927,14 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         std::cout << std::endl;
       }
 
+      float current_lr = get_learning_rate(batch_idx, 500, 10000, 6e-5f);
+
+      if(batch_idx % 100 == 0){
+        std::cout << " current lr: " << current_lr << '\n';
+      }
+
       // Forward pass
       forward_pass(&state, d_input_tokens, actual_batch_size, config.seq_len);
-
-      float* h_logits = new float[config.vocab_size];
-      cudaMemcpy(h_logits, state.activations.logits, config.vocab_size * sizeof(float), cudaMemcpyDeviceToHost);
-
-      bool has_nan = false;
-      for (int i = 0; i < config.vocab_size; i++) {
-        if (std::isnan(h_logits[i]) || std::isinf(h_logits[i])) {
-          has_nan = true;
-          break;
-        }
-      }
-      if (has_nan) printf("WARNING: NaN/Inf in logits at batch %zu\n", batch_idx);
-      delete[] h_logits;
 
       // Check for CUDA errors
       cudaError_t err = cudaGetLastError();
@@ -1913,6 +1948,17 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         std::cerr << "CUDA error after synchronize: " << cudaGetErrorString(err) << std::endl;
         exit(1);
       }
+
+      // Add this AFTER forward_pass, BEFORE compute_loss
+      // if (batch_idx % 100 == 0) {
+      //   std::vector<float> sample_acts(100);
+      //   cudaMemcpy(sample_acts.data(), state.activations.queries[0], 
+      //              100 * sizeof(float), cudaMemcpyDeviceToHost);
+
+      //   float min_act = *std::min(sample_acts.begin(), sample_acts.end());
+      //   float max_act = *std::max(sample_acts.begin(), sample_acts.end());
+      //   std::cout << "  Forward activations (queries): [" << min_act << ", " << max_act << "]" << std::endl;
+      // }
 
       // Compute loss
       float batch_loss = compute_loss(&state, d_target_tokens, actual_batch_size, config.seq_len);
@@ -1940,13 +1986,62 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       num_batches_processed++;
 
       // Backward pass
-      backward_pass(&state, d_target_tokens, actual_batch_size, config.seq_len);
+      backward_pass(&state, d_input_tokens, d_target_tokens, actual_batch_size, config.seq_len);
 
       //clip gradients
-      clip_gradients(&state, 0.5f);
+      clip_gradients(&state, 1.0f);
+
+     
+
+      // if (batch_idx % 10 == 0) {
+      //   // Check gradients for tokens that actually appear in the batch
+      //   std::vector<float> token_29_grad(128);
+      //   cudaMemcpy(token_29_grad.data(), 
+      //              state.gradients.token_embeddings + 29 * state.config.embed_dim,
+      //              128 * sizeof(float), cudaMemcpyDeviceToHost);
+
+      //   float grad_norm = 0;
+      //   for (float g : token_29_grad) {
+      //     grad_norm += g * g;
+      //   }
+      //   grad_norm = sqrt(grad_norm);
+
+      //   std::cout << "  Token 29 gradient norm: " << grad_norm << std::endl;
+
+      //   // Check if token 29's embedding is updating
+      //   std::vector<float> token_29_weights(128);
+      //   cudaMemcpy(token_29_weights.data(),
+      //              state.weights.token_embeddings + 29 * state.config.embed_dim,
+      //              128 * sizeof(float), cudaMemcpyDeviceToHost);
+
+      //   float weight_norm = 0;
+      //   for (float w : token_29_weights) {
+      //     weight_norm += w * w;
+      //   }
+      //   weight_norm = sqrt(weight_norm);
+
+      //   std::cout << "  Token 29 weight norm: " << weight_norm << std::endl;
+      // }
+
+      // if (batch_idx % 100 == 0) {
+      //   std::vector<float> attn_grads(100), mlp_grads(100);
+      //   cudaMemcpy(attn_grads.data(), state.gradients.attention_query_weights[0], 
+      //              100 * sizeof(float), cudaMemcpyDeviceToHost);
+      //   cudaMemcpy(mlp_grads.data(), state.gradients.mlp_fc1_weights[0], 
+      //              100 * sizeof(float), cudaMemcpyDeviceToHost);
+
+      //   auto norm = [](const std::vector<float>& v) {
+      //     float sum = 0;
+      //     for (float x : v) sum += x*x;
+      //     return sqrt(sum);
+      //   };
+
+      //   std::cout << "  Attn grad norm: " << norm(attn_grads) 
+      //     << ", MLP grad norm: " << norm(mlp_grads) << std::endl;
+      // }
 
       // Optimizer step
-      optimizer_step(&state, learning_rate, beta1, beta2, epsilon);
+      optimizer_step(&state, current_lr, beta1, beta2, epsilon);
 
       // Print progress
       if (batch_idx % 10 == 0) {
@@ -1958,37 +2053,6 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         sprintf(checkpoint_name, "./data/checkpoints/model_batch_%d.bin", num_batches_processed);
         // std::string checkpoint_path = "./data/checkpoints/model.bin";
         save_checkpoint(&state, checkpoint_name, epoch + 1, 1.0f);
-      }
-
-      if (batch_idx % 100 == 0) {
-        // Check token embeddings
-        float* h_weights = new float[1000];
-        cudaMemcpy(h_weights, state.weights.token_embeddings, 1000 * sizeof(float), cudaMemcpyDeviceToHost);
-
-        float min_w = h_weights[0], max_w = h_weights[0], sum = 0;
-        for (int i = 0; i < 1000; i++) {
-          min_w = std::min(min_w, h_weights[i]);
-          max_w = std::max(max_w, h_weights[i]);
-          sum += h_weights[i];
-        }
-
-        printf("Batch %zu - Token embeddings: min=%.6f max=%.6f mean=%.6f\n", 
-               batch_idx, min_w, max_w, sum/1000);
-        delete[] h_weights;
-
-        float* h_momentum = new float[1000];
-        cudaMemcpy(h_momentum, state.optimizer.momentum.token_embeddings, 
-                   1000 * sizeof(float), cudaMemcpyDeviceToHost);
-
-        float max_m = 0, sum_m = 0;
-        for (int i = 0; i < 1000; i++) {
-          max_m = std::max(max_m, std::abs(h_momentum[i]));
-          sum_m += std::abs(h_momentum[i]);
-        }
-
-        printf("Batch %zu - Momentum: max_abs=%.6f mean_abs=%.6f\n", 
-               batch_idx, max_m, sum_m/1000);
-        delete[] h_momentum;
       }
     }
 
@@ -2443,6 +2507,15 @@ void load_checkpoint(TrainingState* state, const std::string& filepath){
 
   file.close();
   std::cout << "Checkpoint loaded successfully" << std::endl;
+}
+
+float get_learning_rate(int step, int warmup_steps, int total_steps, float max_lr){
+  if(step < warmup_steps){
+    return max_lr * (float)step / warmup_steps;
+  }else{
+    float progress = (float)(step - warmup_steps) / (total_steps - warmup_steps);
+    return max_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
+  }
 }
 
 }//namespace training
