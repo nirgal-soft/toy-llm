@@ -7,6 +7,9 @@
 #include <curand_kernel.h>
 #include "training.h"
 #include "kernels.cuh"
+#include "json.hpp"
+
+using json = nlohmann::json;
 
 // Load vocabulary
 struct Vocabulary {
@@ -16,42 +19,31 @@ struct Vocabulary {
 
 Vocabulary load_vocabulary(const std::string& vocab_path) {
   Vocabulary vocab;
-  std::ifstream file(vocab_path, std::ios::binary);
+  std::ifstream file(vocab_path);
   if (!file) {
     std::cerr << "Failed to open vocab file: " << vocab_path << std::endl;
     exit(1);
   }
 
-  // Read vocab size (as size_t to match save_vocab)
-  size_t vocab_size_st;
-  file.read(reinterpret_cast<char*>(&vocab_size_st), sizeof(size_t));
-  vocab.vocab_size = static_cast<int>(vocab_size_st);
+  // Parse JSON
+  json j;
+  file >> j;
+  file.close();
+
+  // Get vocab size
+  vocab.vocab_size = j["vocab_size"];
   vocab.idx_to_token.resize(vocab.vocab_size);
 
   std::cout << "Reading vocab with " << vocab.vocab_size << " tokens..." << std::endl;
 
-  for (size_t i = 0; i < vocab_size_st; i++) {
-    // Read token length
-    size_t token_len;
-    file.read(reinterpret_cast<char*>(&token_len), sizeof(size_t));
-    
-    // Read token string
-    std::vector<char> token_buf(token_len + 1);
-    file.read(token_buf.data(), token_len);
-    token_buf[token_len] = '\0';
-    std::string token(token_buf.data());
-    
-    // Read token id
-    int id;
-    file.read(reinterpret_cast<char*>(&id), sizeof(int));
-    
-    // Store in array at correct index
-    if (id >= 0 && id < vocab.vocab_size) {
-      vocab.idx_to_token[id] = token;
+  // Build idx_to_token array from vocab mapping
+  for (auto& [token, id] : j["vocab"].items()) {
+    int token_id = id.get<int>();
+    if (token_id >= 0 && token_id < vocab.vocab_size) {
+      vocab.idx_to_token[token_id] = token;
     }
   }
 
-  file.close();
   std::cout << "Loaded vocabulary with " << vocab.vocab_size << " tokens" << std::endl;
   return vocab;
 }
@@ -225,7 +217,7 @@ int main(int argc, char** argv) {
   // std::string checkpoint_path = argv[1];
   // std::string vocab_path = argv[2];
   std::string checkpoint_path = "./model_batch_2001.bin";
-  std::string vocab_path = "./data/preprocessed/vocab.bin";
+  std::string vocab_path = "./data/preprocessed/vocab.json";
   std::string prompt_text = (argc > 1) ? argv[1] : "Once upon a time";
   int max_tokens = (argc > 2) ? std::stoi(argv[2]) : 50;
   float temperature = (argc > 3) ? std::stof(argv[3]) : 0.3f;
