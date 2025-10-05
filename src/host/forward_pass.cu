@@ -95,11 +95,32 @@ void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_
       batch_size, seq_len, embed_dim
     );
 
+    //reshape Q, K, V from [batch*seq, embed_dim] to [batch, num_heads, seq, head_dim]
+    int reshape_size = batch_size * seq_len * embed_dim;
+    int block_size_reshape = 256;
+    int grid_size_reshape = (reshape_size + block_size_reshape - 1) / block_size_reshape;
+
+    reshape_qkv<<<grid_size_reshape, block_size_reshape>>>(
+      state->activations.queries[layer],
+      state->activations.queries_reshaped[layer],
+      batch_size, seq_len, num_heads, head_dim
+    );
+    reshape_qkv<<<grid_size_reshape, block_size_reshape>>>(
+      state->activations.keys[layer],
+      state->activations.keys_reshaped[layer],
+      batch_size, seq_len, num_heads, head_dim
+    );
+    reshape_qkv<<<grid_size_reshape, block_size_reshape>>>(
+      state->activations.values[layer],
+      state->activations.values_reshaped[layer],
+      batch_size, seq_len, num_heads, head_dim
+    );
+
     //compute attention scores
     dim3 attn_score_grid(seq_len, num_heads, batch_size);
     attention_scores<<<attn_score_grid, 32>>>(
-      state->activations.queries[layer],
-      state->activations.keys[layer],
+      state->activations.queries_reshaped[layer],
+      state->activations.keys_reshaped[layer],
       state->activations.attention_scores[layer],
       batch_size, num_heads, seq_len, head_dim
     );
@@ -112,12 +133,12 @@ void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_
       batch_size * num_heads, seq_len
     );
 
-    //apply attention to values
+    //apply attention to values (outputs concatenated heads in flat layout)
     dim3 attn_combine_grid(seq_len, num_heads, batch_size);
     attention_combine<<<attn_combine_grid, 32>>>(
       state->activations.attention_weights[layer],
-      state->activations.values[layer], //no such variables
-      state->activations.attention_output[layer],
+      state->activations.values_reshaped[layer],
+      state->activations.attention_output[layer],  // directly in [batch*seq, embed_dim]
       batch_size, num_heads, seq_len, head_dim
     );
 
@@ -202,7 +223,7 @@ void forward_pass(TrainingState* state, int* token_ids, int batch_size, int seq_
 
     //residual connection
     add_tensors<<<(total_elements + 255) / 256, 256>>>(
-      state->activations.ln1_outputs[layer],
+      state->activations.post_attn[layer],
       state->activations.mlp_fc2[layer],
       state->activations.post_mlp[layer],
       total_elements

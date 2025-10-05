@@ -111,6 +111,9 @@ void allocate_model(TrainingState* state, const ModelConfig& config){
   state->activations.queries = new float*[num_layers];
   state->activations.keys = new float*[num_layers];
   state->activations.values = new float*[num_layers];
+  state->activations.queries_reshaped = new float*[num_layers];
+  state->activations.keys_reshaped = new float*[num_layers];
+  state->activations.values_reshaped = new float*[num_layers];
   state->activations.attention_scores = new float*[num_layers];
   state->activations.attention_weights = new float*[num_layers];
   state->activations.attention_output = new float*[num_layers];
@@ -138,6 +141,12 @@ void allocate_model(TrainingState* state, const ModelConfig& config){
                       batch_size * seq_len * embed_dim * sizeof(float), "keys");
     cuda_malloc_check((void**)&state->activations.values[i],
                       batch_size * seq_len * embed_dim * sizeof(float), "values");
+    cuda_malloc_check((void**)&state->activations.queries_reshaped[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "queries_reshaped");
+    cuda_malloc_check((void**)&state->activations.keys_reshaped[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "keys_reshaped");
+    cuda_malloc_check((void**)&state->activations.values_reshaped[i],
+                      batch_size * seq_len * embed_dim * sizeof(float), "values_reshaped");
     cuda_malloc_check((void**)&state->activations.attention_scores[i],
                       batch_size * num_heads * seq_len * seq_len * sizeof(float), "attention_scores");
     cuda_malloc_check((void**)&state->activations.attention_weights[i],
@@ -596,13 +605,12 @@ float compute_loss(TrainingState* state, int* target_ids, int batch_size, int se
 }
 
 void clip_gradients(TrainingState* state, float max_norm) {
-  // std::cout << "clip_gradients called with max_norm=" << max_norm << '\n';
   int embed_dim = state->config.embed_dim;
   int vocab_size = state->config.vocab_size;
   int seq_len = state->config.seq_len;
   int num_layers = state->config.num_layers;
   int mlp_hidden = 4 * embed_dim;
-  
+
   // Allocate device memory for total squared norm
   float* d_total_squared_norm;
   cudaMalloc(&d_total_squared_norm, sizeof(float));
@@ -779,7 +787,14 @@ void clip_gradients(TrainingState* state, float max_norm) {
       state->gradients.output_weights, embed_dim * vocab_size, scale
     );
   }
-  
+
+  // Log gradient norm for debugging
+  float h_grad_norm = sqrtf(h_total_squared_norm);
+  static int print_counter = 0;
+  if(print_counter++ % 100 == 0) {
+    std::cout << " grad_norm: " << h_grad_norm;
+  }
+
   cudaFree(d_total_squared_norm);
   cudaDeviceSynchronize();
 }
@@ -1085,7 +1100,9 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
         std::cout << std::endl;
       }
 
-      float current_lr = get_learning_rate(batch_idx, 500, 10000, 6e-5f);
+      int total_steps = batches.size();
+      int warmup_steps = 500;  // Standard warmup
+      float current_lr = get_learning_rate(batch_idx, warmup_steps, total_steps, learning_rate);
 
       if(batch_idx % 100 == 0){
         std::cout << " current lr: " << current_lr << '\n';
@@ -1147,7 +1164,7 @@ void train_model(const std::string& token_ids_path, const ModelConfig& config,
       backward_pass(&state, d_input_tokens, d_target_tokens, actual_batch_size, config.seq_len);
 
       //clip gradients
-      clip_gradients(&state, 1.0f);
+      clip_gradients(&state, 5.0f);
 
      
 
@@ -1258,6 +1275,9 @@ void free_model(TrainingState* state) {
     cudaFree(state->activations.queries[i]);
     cudaFree(state->activations.keys[i]);
     cudaFree(state->activations.values[i]);
+    cudaFree(state->activations.queries_reshaped[i]);
+    cudaFree(state->activations.keys_reshaped[i]);
+    cudaFree(state->activations.values_reshaped[i]);
     cudaFree(state->activations.attention_scores[i]);
     cudaFree(state->activations.attention_weights[i]);
     cudaFree(state->activations.attention_output[i]);
@@ -1420,6 +1440,9 @@ void free_model(TrainingState* state) {
   delete[] state->activations.queries;
   delete[] state->activations.keys;
   delete[] state->activations.values;
+  delete[] state->activations.queries_reshaped;
+  delete[] state->activations.keys_reshaped;
+  delete[] state->activations.values_reshaped;
   delete[] state->activations.attention_scores;
   delete[] state->activations.attention_weights;
   delete[] state->activations.attention_output;
@@ -1668,12 +1691,17 @@ void load_checkpoint(TrainingState* state, const std::string& filepath){
 }
 
 float get_learning_rate(int step, int warmup_steps, int total_steps, float max_lr){
-  if(step < warmup_steps){
-    return max_lr * (float)step / warmup_steps;
-  }else{
-    float progress = (float)(step - warmup_steps) / (total_steps - warmup_steps);
-    return max_lr * 0.5f * (1.0f + cosf(3.14159f * progress));
-  }
+  // DIAGNOSTIC: constant LR to test if warmup is causing divergence
+  return 5e-5f;
+
+  // Original schedule (disabled for testing):
+  // if(step < warmup_steps){
+  //   return max_lr * (float)(step + 1) / warmup_steps;
+  // }else{
+  //   float progress = (float)(step - warmup_steps) / (total_steps - warmup_steps);
+  //   float min_lr = max_lr * 0.1f;
+  //   return min_lr + (max_lr - min_lr) * 0.5f * (1.0f + cosf(3.14159f * progress));
+  // }
 }
 
 }//namespace training

@@ -35,10 +35,12 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
   int grid_size = (total_tokens + block_size - 1)/block_size;
 
   //first compute softmax of logits for backward pass
-  softmax<<<dim3(batch_size, seq_len), 1>>>(
+  int softmax_block = 256;
+  int softmax_grid = (total_tokens + softmax_block - 1) / softmax_block;
+  softmax_vocab<<<softmax_grid, softmax_block>>>(
     state->activations.logits,
     state->activations.softmax_output,
-    batch_size, seq_len
+    total_tokens, vocab_size
   );
 
   softmax_cross_entropy_backward<<<grid_size, block_size>>>(
@@ -103,14 +105,6 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
     );
 
     // === mlp backward ===
-   
-    //residual: add gradient from post_mlp path to ln1_outputs
-    add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
-      state->gradients.ln1_outputs[layer],
-      state->gradients.post_mlp[layer],
-      state->gradients.ln1_outputs[layer],
-      total_tokens * embed_dim
-    );
 
     // fc2 backward
     // grad_mlp_gelu
@@ -118,7 +112,7 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
       state->gradients.post_mlp[layer],
       state->weights.mlp_fc2_weights[layer],
       state->gradients.mlp_gelu[layer],
-      total_tokens, embed_dim, mlp_hidden,
+      total_tokens, mlp_hidden, embed_dim,
       false, true
     );
 
@@ -192,6 +186,14 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
 
     // === attention backward ===
 
+    //residual: add gradient from post_mlp path (MLP residual)
+    add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
+      state->gradients.post_attn[layer],
+      state->gradients.post_mlp[layer],
+      state->gradients.post_attn[layer],
+      total_tokens * embed_dim
+    );
+
     //residual: add gradient from post_attn path to layer_inputs
     add_tensors<<<(total_tokens * embed_dim + 255)/256, 256>>>(
       state->gradients.layer_inputs[layer],
@@ -235,16 +237,26 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
     //attention mechanism backward
     dim3 attn_grid(seq_len, num_heads, batch_size);
 
+    int reshape_size = batch_size * seq_len * embed_dim;
+    int block_size_reshape = 256;
+    int grid_size_reshape = (reshape_size + block_size_reshape - 1) / block_size_reshape;
+
+    // Use gradient buffers as temp storage
+    float* grad_values_reshaped = state->gradients.query_input[layer];  // temp
+    float* grad_queries_reshaped = state->gradients.key_input[layer];  // temp
+    float* grad_keys_reshaped = state->gradients.value_input[layer];  // temp
+
+    // grad_attention_output is already in flat/concatenated layout
     attention_values_backward<<<attn_grid, 32>>>(
-      state->gradients.attention_output[layer],
+      state->gradients.attention_output[layer],  // flat layout
       state->activations.attention_weights[layer],
-      state->gradients.values[layer], //no such variable
+      grad_values_reshaped,
       batch_size, num_heads, seq_len, head_dim
     );
 
     attention_weights_backward<<<attn_grid, 32>>>(
-      state->gradients.attention_output[layer],
-      state->activations.values[layer], //no such variable
+      state->gradients.attention_output[layer],  // flat layout
+      state->activations.values_reshaped[layer],  // saved from forward
       state->gradients.attention_weights[layer],
       batch_size, num_heads, seq_len, head_dim
     );
@@ -258,11 +270,28 @@ void backward_pass(TrainingState* state, int* input_ids, int* target_ids,
 
     attention_qk_backward<<<attn_grid, 32>>>(
       state->gradients.attention_scores[layer],
-      state->activations.queries[layer],
-      state->activations.keys[layer],
-      state->gradients.queries[layer],
-      state->gradients.keys[layer],
+      state->activations.queries_reshaped[layer],  // saved from forward
+      state->activations.keys_reshaped[layer],     // saved from forward
+      grad_queries_reshaped,
+      grad_keys_reshaped,
       batch_size, num_heads, seq_len, head_dim
+    );
+
+    // Reshape gradients back to flat layout for projection backward
+    reshape_qkv_backward<<<grid_size_reshape, block_size_reshape>>>(
+      grad_queries_reshaped,
+      state->gradients.queries[layer],
+      batch_size, seq_len, num_heads, head_dim
+    );
+    reshape_qkv_backward<<<grid_size_reshape, block_size_reshape>>>(
+      grad_keys_reshaped,
+      state->gradients.keys[layer],
+      batch_size, seq_len, num_heads, head_dim
+    );
+    reshape_qkv_backward<<<grid_size_reshape, block_size_reshape>>>(
+      grad_values_reshaped,
+      state->gradients.values[layer],
+      batch_size, seq_len, num_heads, head_dim
     );
 
     // === Q, K, V Projection Backward ===

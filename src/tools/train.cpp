@@ -31,7 +31,7 @@ int main(int argc, char* argv[]) {
   config.batch_size = 32;
 
   int num_epochs = 1;
-  float learning_rate = 0.0003f;
+  float learning_rate = 0.0001f;  // Standard LR for small transformers
 
   try{
     training::train_model(token_ids_path, config, num_epochs, learning_rate);

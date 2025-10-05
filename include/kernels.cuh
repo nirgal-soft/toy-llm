@@ -22,10 +22,15 @@ __global__ void linear_proj(float* input, float* weights, float* bias, float* ou
 __global__ void attention_scores(float* queries, float* keys, float* scores,
                                  int batch_size, int num_heads, int seq_len, int head_dim);
 __global__ void softmax(float* input, float* output, int batch_size, int seq_len);
+__global__ void softmax_vocab(float* input, float* output, int total_tokens, int vocab_size);
 __global__ void attention_combine(float* att_weights, float* values, float* output,
                            int batch_size, int num_heads, int seq_len, int head_dim);
 __global__ void add_position_embeddings(float* token_embeds, float* pos_embeds, float* output,
                                         int batch_size, int seq_len, int embed_dim);
+__global__ void reshape_qkv(float* input, float* output,
+                            int batch_size, int seq_len, int num_heads, int head_dim);
+__global__ void reshape_qkv_backward(float* grad_output, float* grad_input,
+                                     int batch_size, int seq_len, int num_heads, int head_dim);
 
 //backward pass kernels
 __global__ void cross_entropy_loss(float* logits, int* targets, float* loss,

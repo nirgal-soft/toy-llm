@@ -81,7 +81,9 @@ __global__ void attention_scores(float* queries, float* keys, float* scores,
   int qk_offset = (batch * num_heads + head) * seq_len * head_dim;
   int score_offset = (batch * num_heads + head) * seq_len * seq_len;
 
-  //compute dote between query[q_idx] and all keys
+  //compute dot between query[q_idx] and all keys (with causal masking)
+  float scale = 1.0f / sqrtf((float)head_dim);
+
   for(int k = 0; k < seq_len; k++){
     float score = 0.0f;
 
@@ -93,13 +95,18 @@ __global__ void attention_scores(float* queries, float* keys, float* scores,
     }
 
     //scale by sqrt(head_dim) for stability
-    score /= sqrtf((float)head_dim);
+    score *= scale;
+
+    // Causal mask: apply AFTER scaling
+    if(k > q_idx) {
+      score = -1e10f;  // Large negative value -> softmax will be ~0
+    }
 
     scores[score_offset+q_idx*seq_len+k] = score;
   }
 }
 
-//softmax
+//softmax over seq_len dimension (for attention weights)
 __global__ void softmax(float* input, float* output, int batch_size, int seq_len){
   int batch_idx = blockIdx.x;
   int seq_idx = blockIdx.y;
@@ -128,7 +135,35 @@ __global__ void softmax(float* input, float* output, int batch_size, int seq_len
   }
 }
 
-//attention combine
+//softmax over vocab dimension (for output logits)
+__global__ void softmax_vocab(float* input, float* output, int total_tokens, int vocab_size){
+  int token_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if(token_idx >= total_tokens) return;
+
+  int offset = token_idx * vocab_size;
+
+  //find max for numerical stability
+  float max_val = input[offset];
+  for(int i = 1; i < vocab_size; i++){
+    max_val = fmaxf(max_val, input[offset+i]);
+  }
+
+  //compute exp and sum
+  float sum = 0.0f;
+  for(int i = 0; i < vocab_size; i++){
+    float exp_val = expf(input[offset+i] - max_val);
+    output[offset+i] = exp_val;
+    sum += exp_val;
+  }
+
+  //norm
+  for(int i = 0; i < vocab_size; i++){
+    output[offset+i] /= sum;
+  }
+}
+
+//attention combine - outputs concatenated heads
 __global__ void attention_combine(float* att_weights, float* values, float* output,
                            int batch_size, int num_heads, int seq_len, int head_dim){
   int batch = blockIdx.z;
@@ -139,7 +174,8 @@ __global__ void attention_combine(float* att_weights, float* values, float* outp
 
   int v_offset = (batch * num_heads + head) * seq_len * head_dim;
   int attn_offset = (batch * num_heads + head) * seq_len * seq_len + q_idx * seq_len;
-  int out_offset = (batch * num_heads + head) * seq_len * head_dim + q_idx * head_dim;
+  // Output should concatenate heads: [batch, seq, num_heads, head_dim]
+  int out_offset = batch * seq_len * (num_heads * head_dim) + q_idx * (num_heads * head_dim) + head * head_dim;
 
   //weight sum
   for(int d = 0; d < head_dim; d++){
@@ -157,12 +193,52 @@ __global__ void add_position_embeddings(float* token_embeds, float* pos_embeds, 
                                         int batch_size, int seq_len, int embed_dim){
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   int total = batch_size * seq_len * embed_dim;
-  
+
   if(idx < total){
     int b = idx / (seq_len * embed_dim);
     int s = (idx / embed_dim) % seq_len;
     int d = idx % embed_dim;
-    
+
     output[idx] = token_embeds[idx] + pos_embeds[s * embed_dim + d];
+  }
+}
+
+// Reshape from [batch*seq, embed_dim] to [batch, num_heads, seq, head_dim]
+__global__ void reshape_qkv(float* input, float* output,
+                            int batch_size, int seq_len, int num_heads, int head_dim){
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = batch_size * seq_len * num_heads * head_dim;
+
+  if(idx < total){
+    // Output layout: [batch, num_heads, seq, head_dim]
+    int b = idx / (num_heads * seq_len * head_dim);
+    int h = (idx / (seq_len * head_dim)) % num_heads;
+    int s = (idx / head_dim) % seq_len;
+    int d = idx % head_dim;
+
+    // Input layout: [batch*seq, embed_dim] = [batch*seq, num_heads*head_dim]
+    int input_idx = (b * seq_len + s) * (num_heads * head_dim) + h * head_dim + d;
+
+    output[idx] = input[input_idx];
+  }
+}
+
+// Reshape backward from [batch, num_heads, seq, head_dim] to [batch*seq, embed_dim]
+__global__ void reshape_qkv_backward(float* grad_output, float* grad_input,
+                                     int batch_size, int seq_len, int num_heads, int head_dim){
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = batch_size * seq_len * num_heads * head_dim;
+
+  if(idx < total){
+    // grad_output layout: [batch, num_heads, seq, head_dim]
+    int b = idx / (num_heads * seq_len * head_dim);
+    int h = (idx / (seq_len * head_dim)) % num_heads;
+    int s = (idx / head_dim) % seq_len;
+    int d = idx % head_dim;
+
+    // grad_input layout: [batch*seq, embed_dim] = [batch*seq, num_heads*head_dim]
+    int input_idx = (b * seq_len + s) * (num_heads * head_dim) + h * head_dim + d;
+
+    grad_input[input_idx] = grad_output[idx];
   }
 }

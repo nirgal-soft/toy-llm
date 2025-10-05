@@ -81,13 +81,15 @@ __global__ void attention_values_backward(float* grad_output, float* attn_weight
 
   int attn_offset = (batch * num_heads + head) * seq_len * seq_len;
   int v_offset = (batch * num_heads + head) * seq_len * head_dim + k_idx * head_dim;
-  int out_offset = (batch * num_heads + head) * seq_len * head_dim;
+  // grad_output is in concatenated layout: [batch, seq, num_heads*head_dim]
 
   for(int d = 0; d < head_dim; d++){
     float grad = 0.0f;
     for(int q = 0; q < seq_len; q++){
       float attn_weight = attn_weights[attn_offset + q * seq_len + k_idx];
-      float grad_out = grad_output[out_offset + q * head_dim + d];
+      // Read from concatenated layout
+      int grad_out_idx = batch * seq_len * (num_heads * head_dim) + q * (num_heads * head_dim) + head * head_dim + d;
+      float grad_out = grad_output[grad_out_idx];
       grad += attn_weight * grad_out;
     }
     grad_values[v_offset+d] = grad;
@@ -103,13 +105,15 @@ __global__ void attention_weights_backward(float* grad_output, float* values, fl
   if(batch >= batch_size || head >= num_heads || q_idx >= seq_len) return;
 
   int v_offset = (batch * num_heads + head) * seq_len * head_dim;
-  int out_offset = (batch * num_heads + head) * seq_len * head_dim + q_idx * head_dim;
+  // grad_output is in concatenated layout: [batch, seq, num_heads*head_dim]
   int attn_grad_offset = (batch * num_heads + head) * seq_len * seq_len + q_idx * seq_len;
 
   for(int k = 0; k < seq_len; k++){
     float grad = 0.0f;
     for(int d = 0; d < head_dim; d++){
-      float grad_out = grad_output[out_offset + d];
+      // Read from concatenated layout
+      int grad_out_idx = batch * seq_len * (num_heads * head_dim) + q_idx * (num_heads * head_dim) + head * head_dim + d;
+      float grad_out = grad_output[grad_out_idx];
       float v_val = values[v_offset + k * head_dim + d];
       grad += grad_out * v_val;
     }
@@ -150,6 +154,7 @@ __global__ void attention_qk_backward(float* grad_scores, float* queries, float*
   int score_offset = (batch * num_heads + head) * seq_len * seq_len;
   float scale = 1.0f / sqrtf((float)head_dim);
 
+  // Gradient w.r.t. queries
   for(int d = 0; d < head_dim; d++){
     float grad_q = 0.0f;
     for(int k = 0; k < seq_len; k++){
@@ -160,6 +165,7 @@ __global__ void attention_qk_backward(float* grad_scores, float* queries, float*
     grad_queries[qk_offset + idx * head_dim + d] = grad_q * scale;
   }
 
+  // Gradient w.r.t. keys
   for(int d = 0; d < head_dim; d++){
     float grad_k = 0.0f;
     for(int q = 0; q < seq_len; q++){
@@ -282,8 +288,8 @@ __global__ void layer_norm_backward(float* grad_output, float* input, float* gam
     float grad_out = grad_output[offset+i];
 
     grad_input[offset+i] = inv_std * (
-      grad_out * gamma[i] - 
-      total_grad_sum / N - 
+      grad_out * gamma[i] -
+      total_grad_sum / N -
       x_norm * total_grad_dot / N
     );
   }

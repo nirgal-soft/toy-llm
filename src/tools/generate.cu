@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
 
   // std::string checkpoint_path = argv[1];
   // std::string vocab_path = argv[2];
-  std::string checkpoint_path = "./model_batch_2001.bin";
+  std::string checkpoint_path = "./model_batch_45001.bin";
   std::string vocab_path = "./data/preprocessed/vocab.json";
   std::string prompt_text = (argc > 1) ? argv[1] : "Once upon a time";
   int max_tokens = (argc > 2) ? std::stoi(argv[2]) : 50;

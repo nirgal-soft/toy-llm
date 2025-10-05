@@ -24,7 +24,7 @@ vocab.json
 
 # Documentation
 *.pdf
-bin/txts/tinystories.txt
+data/txts/tinystories.txt
 
 # IDE and editor files
 .vscode/
